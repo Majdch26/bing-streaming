@@ -1,233 +1,135 @@
 <?php
-session_start();
-include('db.php');
+require __DIR__ . '/includes/bootstrap.php';
+require __DIR__ . '/includes/layout.php';
+require __DIR__ . '/includes/catalogue.php';
 
-// Redirect if not logged in
-if (!isset($_SESSION['user_id']) || !isset($_SESSION['profile_id'])) {
-    header("Location: login.php");
-    exit();
+$utilisateur = utilisateur_courant();
+if ($utilisateur === null) {
+    rediriger('login.php');
 }
+$profil = exiger_profil();
+$favoris = ids_favoris((int) $profil['id']);
 
-// Get profile details
-$stmt = $conn->prepare("SELECT * FROM profils WHERE id = ? AND id_utilisateur = ?");
-$stmt->execute([$_SESSION['profile_id'], $_SESSION['user_id']]);
-$profile = $stmt->fetch();
+$aLaUne = videos($profil, '1 = 1', [], 'v.image_fond IS NULL, v.date_publication DESC', 4);
+$rangees = [
+    ['Continue Watching', 'continue', continuer_regarder($profil)],
+    ['Popular on BING', 'popular', videos($profil, '1 = 1', [], 'v.nb_spectateurs DESC, v.titre', 10)],
+    ['My List', 'my-list', videos($profil, 'v.id IN (SELECT id_video FROM favoris WHERE id_profil = :p)',
+                                  ['p' => $profil['id']],
+                                  '(SELECT date_ajout FROM favoris WHERE id_profil = :p AND id_video = v.id) DESC')],
+    ['New Releases', 'new', videos($profil, '1 = 1', [], 'v.date_publication DESC', 10)],
+    ['Movies', 'movies', videos($profil, "v.type = 'film'", [], 'v.titre')],
+    ['TV Series', 'series', videos($profil, "v.type = 'serie'", [], 'v.titre')],
+];
+$maListe = $rangees[2][2];
 
-if (!$profile) {
-    header("Location: profiles.php");
-    exit();
-}
-
-// Store profile avatar in session
-$_SESSION['profile_avatar'] = $profile['avatar'];
-
-// Get user's favorite videos
-$stmt = $conn->prepare("
-    SELECT v.*, 
-           CASE WHEN f.id_video IS NOT NULL THEN 1 ELSE 0 END as is_movie
-    FROM favoris f
-    JOIN video v ON f.id_video = v.id
-    LEFT JOIN film fl ON v.id = fl.id_video
-    WHERE f.id_profil = ?
-");
-$stmt->execute([$_SESSION['profile_id']]);
-$favorites = $stmt->fetchAll();
-
-// Get popular videos
-$stmt = $conn->query("
-    SELECT v.*, 
-           CASE WHEN f.id_video IS NOT NULL THEN 1 ELSE 0 END as is_movie
-    FROM video v
-    LEFT JOIN film f ON v.id = f.id_video
-    ORDER BY date_publication DESC 
-    LIMIT 10
-");
-$popular = $stmt->fetchAll();
-
-// Get featured videos
-$stmt = $conn->query("
-    SELECT v.*, 
-           CASE WHEN f.id_video IS NOT NULL THEN 1 ELSE 0 END as is_movie
-    FROM video v
-    LEFT JOIN film f ON v.id = f.id_video
-    ORDER BY date_publication DESC 
-    LIMIT 3
-");
-$featured = $stmt->fetchAll();
-
-// Get Popular Series (Non-Movies)
-$stmt = $conn->prepare("
-    SELECT v.*, 
-           CASE WHEN f.id_video IS NOT NULL THEN 1 ELSE 0 END as is_movie
-    FROM video v
-    LEFT JOIN film f ON v.id = f.id_video
-    WHERE f.id_video IS NULL
-    ORDER BY date_publication DESC 
-    LIMIT 10
-");
-$stmt->execute();
-$popularSeries = $stmt->fetchAll();
+$page = 'home';
+entete('Home', ['navbar.css', 'index.css']);
+include __DIR__ . '/includes/navbar.php';
 ?>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BING - Home</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="/css/index.css">
-</head>
-<body>
-    <div class="loading-screen">
-        <div class="loading-logo"></div>
-    </div>
-
-    <?php include('navbar.php'); ?>
-
-    <!-- Hero Carousel -->
-    <!-- Hero Carousel -->
-<div class="hero-carousel">
-    <?php foreach ($featured as $index => $video): ?>
-        <div class="hero-slide <?= $index === 0 ? 'active' : '' ?>">
-            <!-- Replace CSS background image with HTML img -->
-            <img src="<?= htmlspecialchars($video['image']) ?>" class="hero-image" alt="<?= htmlspecialchars($video['titre']) ?>">
-            <div class="gradient-overlay"></div>
-            <div class="hero-content">
-                <div class="content-wrapper">
-                    <h1 class="hero-title"><?= htmlspecialchars($video['titre']) ?></h1>
-                    <button class="watch-button" onclick="location.href='<?= $video['is_movie'] ? 'watch.php?movie=' . $video['id'] : 'serie.php?serie=' . $video['id'] ?>'">Watch Now</button>
-                    <div class="age-rating">16+</div>
+    <!-- Carrousel des nouveautés -->
+    <section class="hero-carousel" aria-label="Featured">
+        <?php foreach ($aLaUne as $i => $video):
+            $lien = $video['type'] === 'film' ? 'watch.php?movie=' . $video['id'] : 'serie.php?serie=' . $video['id']; ?>
+            <div class="hero-slide<?= $i === 0 ? ' active' : '' ?>">
+                <?php if ($video['image_fond']): ?>
+                    <img src="<?= e(url($video['image_fond'])) ?>" class="hero-image" alt="">
+                <?php else: ?>
+                    <div class="hero-image hero-image-blur" style="background-image: url('<?= e(url($video['image'])) ?>')"></div>
+                    <img src="<?= e(url($video['image'])) ?>" class="hero-poster" alt="">
+                <?php endif; ?>
+                <div class="gradient-overlay"></div>
+                <div class="hero-content">
+                    <div class="content-wrapper">
+                        <p class="hero-kicker"><?= $video['type'] === 'film' ? 'Movie' : 'Series' ?> · <?= annee($video['date_publication']) ?> · <?= e($video['categories']) ?></p>
+                        <h1 class="hero-title"><?= e($video['titre']) ?></h1>
+                        <p class="hero-description"><?= e($video['description']) ?></p>
+                        <div class="hero-buttons">
+                            <a class="watch-button" href="<?= url($lien) ?>"><?= $video['type'] === 'film' ? 'Watch Now' : 'Episodes' ?></a>
+                            <?= bouton_favori((int) $video['id'], in_array((int) $video['id'], $favoris, true), 'expanded-add-button hero-add') ?>
+                        </div>
+                        <div class="age-rating"><?= age_libelle((int) $video['age_minimum']) ?></div>
+                    </div>
                 </div>
             </div>
+        <?php endforeach; ?>
+
+        <?php if (count($aLaUne) > 1): ?>
+        <button class="carousel-arrow arrow-left" aria-label="Previous">‹</button>
+        <button class="carousel-arrow arrow-right" aria-label="Next">›</button>
+        <div class="carousel-dots">
+            <?php foreach ($aLaUne as $i => $video): ?>
+                <button class="dot<?= $i === 0 ? ' active' : '' ?>" data-slide="<?= $i ?>" aria-label="Slide <?= $i + 1 ?>"></button>
+            <?php endforeach; ?>
         </div>
-    <?php endforeach; ?>
-    
-    <!-- Keep arrows and dots -->
-    <button class="carousel-arrow arrow-left" onclick="prevSlide()">‹</button>
-    <button class="carousel-arrow arrow-right" onclick="nextSlide()">›</button>
-    
-    <div class="carousel-dots">
-        <?php foreach ($featured as $index => $video): ?>
-            <div class="dot <?= $index === 0 ? 'active' : '' ?>" onclick="goToSlide(<?= $index ?>)"></div>
+        <?php endif; ?>
+    </section>
+
+    <div class="content-section">
+        <?php foreach ($rangees as [$titre, $ancre, $liste]):
+            if (!$liste && $ancre !== 'my-list') {
+                continue;
+            } ?>
+        <section class="movie-section" id="<?= $ancre ?>">
+            <h2 class="section-title"><?= e($titre) ?></h2>
+            <?php if (!$liste): ?>
+                <p class="row-empty">Use the <i class="fas fa-plus"></i> button on any title to add it to your list.</p>
+            <?php else: ?>
+            <button class="section-arrow left" aria-label="Scroll left">‹</button>
+            <div class="movies-container">
+                <?php foreach ($liste as $video): ?>
+                    <?= carte_video($video, $favoris) ?>
+                <?php endforeach; ?>
+            </div>
+            <button class="section-arrow right" aria-label="Scroll right">›</button>
+            <?php endif; ?>
+        </section>
         <?php endforeach; ?>
     </div>
-</div>
 
-    <!-- Content Sections -->
-    <div class="content-section">
-        <!-- Popular Section -->
-        <div class="movie-section">
-            <h2 class="section-title">Popular on BING</h2>
-            <button class="section-arrow left" onclick="scrollSection(this.parentNode, -300)">‹</button>
-            <div class="movies-container">
-                <?php foreach ($popular as $video): ?>
-                    <div class="movie-card" data-id="<?= $video['id'] ?>">
-                        <div class="movie-poster" style="background-image: url('<?= htmlspecialchars($video['image']) ?>')"></div>
-                        <div class="movie-info">
-                            <h3 class="movie-title"><?= htmlspecialchars($video['titre']) ?></h3>
-                            <div class="movie-meta"><?= $video['categorie'] ?></div>
-                        </div>
-                        <div class="expanded-info">
-                            <h3 class="expanded-title"><?= htmlspecialchars($video['titre']) ?></h3>
-                            <div class="expanded-meta"><?= $video['categorie'] ?></div>
-                            <div class="expanded-description">
-                                <?= htmlspecialchars($video['description'] ?? 'No description available') ?>
-                            </div>
-                            <div class="expanded-actions">
-                                <button class="expanded-watch-button" onclick="location.href='<?= $video['is_movie'] ? 'watch.php?movie=' . $video['id'] : 'serie.php?serie=' . $video['id'] ?>'">Watch Now</button>
-                                <form method="post" action="toggle_favorite.php">
-                                    <input type="hidden" name="video_id" value="<?= $video['id'] ?>">
-                                    <button type="submit" class="expanded-add-button <?= in_array($video['id'], array_column($favorites, 'id')) ? 'added' : '' ?>">
-                                        <?= in_array($video['id'], array_column($favorites, 'id')) ? '✓' : '+' ?>
-                                    </button>
-                                </form>
-                            </div>
+    <!-- Fenêtre « Ma liste » -->
+    <div class="watchlist-popup" id="watchlistPopup">
+        <div class="watchlist-header">
+            My List
+            <button class="watchlist-close" aria-label="Close">×</button>
+        </div>
+        <div class="watchlist-content">
+            <?php if (!$maListe): ?>
+                <div class="watchlist-empty">
+                    <div class="watchlist-empty-icon"><i class="fas fa-film"></i></div>
+                    <p>Your list is empty</p>
+                </div>
+            <?php else: ?>
+                <?php foreach ($maListe as $video): ?>
+                    <div class="watchlist-item">
+                        <a class="watchlist-item-poster" href="<?= url($video['type'] === 'film' ? 'watch.php?movie=' . $video['id'] : 'serie.php?serie=' . $video['id']) ?>"
+                           style="background-image: url('<?= e(url($video['image'])) ?>')"></a>
+                        <div class="watchlist-item-details">
+                            <div class="watchlist-item-title"><?= e($video['titre']) ?></div>
+                            <form method="post" action="<?= url('api/favorite.php') ?>">
+                                <?= champ_csrf() ?>
+                                <input type="hidden" name="video_id" value="<?= (int) $video['id'] ?>">
+                                <input type="hidden" name="action" value="remove">
+                                <button type="submit" class="watchlist-item-remove" aria-label="Remove">×</button>
+                            </form>
                         </div>
                     </div>
                 <?php endforeach; ?>
-            </div>
-            <button class="section-arrow right" onclick="scrollSection(this.parentNode, 300)">›</button>
+            <?php endif; ?>
         </div>
-
-
-        <!-- Popular Series Section -->
-<div class="movie-section">
-    <h2 class="section-title">Popular Series</h2>
-    <button class="section-arrow left" onclick="scrollSection(this.parentNode, -300)">‹</button>
-    <div class="movies-container">
-        <?php foreach ($popularSeries as $video): ?>
-            <div class="movie-card" data-id="<?= $video['id'] ?>">
-                <div class="movie-poster" style="background-image: url('<?= htmlspecialchars($video['image']) ?>')"></div>
-                <div class="movie-info">
-                    <h3 class="movie-title"><?= htmlspecialchars($video['titre']) ?></h3>
-                    <div class="movie-meta"><?= $video['categorie'] ?></div>
-                </div>
-                <div class="expanded-info">
-                    <h3 class="expanded-title"><?= htmlspecialchars($video['titre']) ?></h3>
-                    <div class="expanded-meta"><?= $video['categorie'] ?></div>
-                    <div class="expanded-description">
-                        <?= htmlspecialchars($video['description'] ?? 'No description available') ?>
-                    </div>
-                    <div class="expanded-actions">
-                        <button class="expanded-watch-button" onclick="location.href='<?= $video['is_movie'] ? 'watch.php?movie=' . $video['id'] : 'serie.php?serie=' . $video['id'] ?>'">
-                            Watch Now
-                        </button>
-                        <form method="post" action="toggle_favorite.php">
-                            <input type="hidden" name="video_id" value="<?= $video['id'] ?>">
-                            <button type="submit" class="expanded-add-button <?= in_array($video['id'], array_column($favorites, 'id')) ? 'added' : '' ?>">
-                                <?= in_array($video['id'], array_column($favorites, 'id')) ? '✓' : '+' ?>
-                            </button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        <?php endforeach; ?>
-    </div>
-    <button class="section-arrow right" onclick="scrollSection(this.parentNode, 300)">›</button>
-</div>
-
-        <!-- Watchlist Popup -->
-        <div class="watchlist-popup" id="watchlistPopup">
-            <div class="watchlist-header">
-                My Watchlist
-                <button class="watchlist-close" onclick="toggleWatchlistPopup()">×</button>
-            </div>
-            <div class="watchlist-content">
-                <?php if(empty($favorites)): ?>
-                    <div class="watchlist-empty">
-                        <div class="watchlist-empty-icon">🎬</div>
-                        <p>Your watchlist is empty</p>
-                    </div>
-                <?php else: ?>
-                    <?php foreach($favorites as $video): ?>
-                        <div class="watchlist-item">
-                            <div class="watchlist-item-poster" style="background-image: url('<?= htmlspecialchars($video['image']) ?>')"></div>
-                            <div class="watchlist-item-details">
-                                <div class="watchlist-item-title"><?= htmlspecialchars($video['titre']) ?></div>
-                                <form method="post" action="remove_favorite.php">
-                                    <input type="hidden" name="video_id" value="<?= $video['id'] ?>">
-                                    <button type="submit" class="watchlist-item-remove">×</button>
-                                </form>
-                            </div>
-                        </div>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </div>
-            <div class="watchlist-footer">
-                <form method="post" action="clear_favorites.php">
-                    <button type="submit" class="watchlist-clear">Clear All</button>
-                </form>
-            </div>
+        <?php if ($maListe): ?>
+        <div class="watchlist-footer">
+            <form method="post" action="<?= url('api/favorite.php') ?>">
+                <?= champ_csrf() ?>
+                <input type="hidden" name="action" value="clear">
+                <button type="submit" class="watchlist-clear">Clear All</button>
+            </form>
         </div>
-
-        <!-- Watchlist Button -->
-        <button class="watchlist-button" onclick="toggleWatchlistPopup()">
-            <span class="watchlist-count"><?= count($favorites) ?></span>
-            🎬
-        </button>
+        <?php endif; ?>
     </div>
 
-    <script src="/js/index.js"></script>
-</body>
-</html>
+    <button class="watchlist-button" aria-label="My List">
+        <span class="watchlist-count"><?= count($maListe) ?></span>
+        <i class="fas fa-bookmark"></i>
+    </button>
+<?php pied(['index.js']); ?>

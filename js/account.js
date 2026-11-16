@@ -1,69 +1,31 @@
-// Toggle password visibility
-function togglePassword(id) {
-    const input = document.getElementById(id);
-    const icon = input.nextElementSibling;
-    
-    if (input.type === 'password') {
-        input.type = 'text';
-        icon.classList.remove('fa-eye');
-        icon.classList.add('fa-eye-slash');
-    } else {
-        input.type = 'password';
-        icon.classList.remove('fa-eye-slash');
-        icon.classList.add('fa-eye');
-    }
+/* Fenêtre de choix d'une offre */
+const fenetre = document.getElementById('planModal');
+
+function ouvrir() {
+  fenetre.classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+function fermer() {
+  fenetre.classList.remove('active');
+  document.body.style.overflow = '';
 }
 
-// Plan change modal
-const planModal = document.getElementById('planModal');
-const changePlanBtn = document.getElementById('changePlanBtn');
+document.getElementById('changePlanBtn')?.addEventListener('click', ouvrir);
+fenetre.querySelector('.close-modal')?.addEventListener('click', fermer);
+fenetre.addEventListener('click', (e) => { if (e.target === fenetre) fermer(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fermer(); });
 
-changePlanBtn.addEventListener('click', function() {
-    planModal.classList.add('active');
-    document.body.style.overflow = 'hidden';
+document.querySelectorAll('.plan-option').forEach((option) => {
+  option.addEventListener('click', () => {
+    document.querySelectorAll('.plan-option').forEach((o) => o.classList.remove('selected'));
+    option.classList.add('selected');
+    option.querySelector('input').checked = true;
+  });
 });
 
-function closeModal() {
-    planModal.classList.remove('active');
-    document.body.style.overflow = 'auto';
-}
+if (fenetre.classList.contains('active')) document.body.style.overflow = 'hidden';
 
-// Close modal when clicking outside
-planModal.addEventListener('click', function(e) {
-    if (e.target === planModal) {
-        closeModal();
-    }
+/* Confirmation avant suppression du compte */
+document.querySelector('.delete-account-form')?.addEventListener('submit', (e) => {
+  if (!window.confirm('Delete your account permanently? This cannot be undone.')) e.preventDefault();
 });
-
-// Plan selection
-document.querySelectorAll('.plan-option').forEach(option => {
-    option.addEventListener('click', function() {
-        document.querySelectorAll('.plan-option').forEach(opt => {
-            opt.classList.remove('selected');
-        });
-        this.classList.add('selected');
-        this.querySelector('input').checked = true;
-    });
-});
-
-// Add animation when page loads
-document.addEventListener('DOMContentLoaded', function() {
-    const elements = document.querySelectorAll('.detail-card, .form-group');
-    elements.forEach((el, index) => {
-        el.style.animationDelay = `${index * 0.1}s`;
-    });
-    
-    // Show confirmation modal if URL has confirm=1
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.has('confirm')) {
-        document.querySelector('.confirmation-modal').style.display = 'flex';
-        document.body.style.overflow = 'hidden';
-    }
-});
-
-// Close confirmation modal
-function closeConfirmation() {
-    document.querySelector('.confirmation-modal').style.display = 'none';
-    document.body.style.overflow = 'auto';
-    window.history.replaceState({}, document.title, window.location.pathname);
-}

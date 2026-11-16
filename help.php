@@ -1,190 +1,79 @@
 <?php
-session_start();
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Help Center - BING</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/css/help.css">
-</head>
-<body>
-    <?php include('navbar.php'); ?>
-    
+require __DIR__ . '/includes/bootstrap.php';
+require __DIR__ . '/includes/layout.php';
+
+$utilisateur = utilisateur_courant();
+$profil = null;
+if ($utilisateur && isset($_SESSION['profile_id'])) {
+    $profil = requete('SELECT * FROM profils WHERE id = ? AND id_utilisateur = ?', [$_SESSION['profile_id'], $utilisateur['id']])->fetch() ?: null;
+}
+$offres = requete('SELECT * FROM offre WHERE disponible = 1 ORDER BY prix_mensuel')->fetchAll();
+
+/* Questions fréquentes : chaque réponse décrit ce que le site fait vraiment */
+$questions = [
+    'plans' => ['How do I change my plan?',
+        '<p>Go to <a href="' . url('account.php#plan') . '">Account</a> and click <strong>Change plan</strong>.
+         Moving to a more expensive plan takes effect immediately: you only pay the price difference for the days left in the month.
+         Moving to a cheaper plan is free and also immediate.</p>'],
+    'profiles' => ['How many profiles can I create?',
+        '<p>It depends on your plan:</p><ul>' . implode('', array_map(
+            fn ($o) => '<li>' . e($o['nom']) . ': ' . (int) $o['nb_profils_max'] . ' profile' . ($o['nb_profils_max'] > 1 ? 's' : '') . '</li>', $offres))
+        . '</ul><p>Each profile has its own list and its own viewing history.
+         If you move to a plan with fewer profiles, BING tells you which profiles will be removed before anything is deleted.</p>'],
+    'kids' => ['How do kids profiles work?',
+        '<p>Enter an age when you create or edit a profile. Titles rated above that age are hidden everywhere for that profile:
+         home page, search, categories and direct links. Profiles under 13 show a <strong>Kids</strong> badge.</p>'],
+    'resume' => ['Can I stop a video and finish it later?',
+        '<p>Yes. Your position is saved every ten seconds and when you pause or leave the page.
+         The title then appears in <strong>Continue Watching</strong> on the home page. For series, BING takes you to the next episode once you have finished one.</p>'],
+    'subtitles' => ['How do I turn on subtitles?',
+        '<p>When subtitles are available, they are listed under the player. Click the <strong>CC</strong> button in the player to turn them on,
+         and the settings icon to switch language.</p>'],
+    'buffering' => ['Why does my video keep buffering?',
+        '<p>Buffering usually comes from the internet connection. Try to:</p>
+         <ul><li>check your internet speed (5 Mbps or more for HD)</li><li>restart your router and device</li>
+         <li>reduce the number of devices using your network</li></ul>'],
+    'password' => ['I forgot my password. What can I do?',
+        '<p>If you are signed in, change it from <a href="' . url('account.php#change-password') . '">Account</a>.
+         Otherwise, contact support from the email address of your account.</p>'],
+    'delete' => ['How do I delete my account?',
+        '<p>At the bottom of the <a href="' . url('account.php#danger') . '">Account</a> page, confirm with your password.
+         Your profiles, list, viewing history and subscriptions are deleted immediately.</p>'],
+];
+
+entete('Help Center', $profil ? ['navbar.css', 'help.css'] : ['help.css']);
+if ($profil) {
+    include __DIR__ . '/includes/navbar.php';
+} else { ?>
+    <div class="help-topbar"><a href="<?= url('login.php') ?>"><img src="<?= url('images/logo.png') ?>" alt="BING"></a></div>
+<?php } ?>
     <div class="help-container">
         <div class="help-header">
             <h1 class="help-title">Help Center</h1>
-            <p class="help-subtitle">
-                Find answers to common questions, troubleshoot issues, or contact our support team. 
-                We're here to help you get the most out of your BING experience.
-            </p>
+            <p class="help-subtitle">Answers to the most common questions about your BING account, plans and playback.</p>
         </div>
 
-        <div class="faq-section" id="account">
-            <h2 class="section-title">
-                <i class="fas fa-question-circle"></i> Frequently Asked Questions
-            </h2>
-            
-            <div class="faq-item">
-                <div class="faq-question">
-                    How do I change my subscription plan?
+        <div class="faq-section">
+            <h2 class="section-title"><i class="fas fa-question-circle"></i> Frequently Asked Questions</h2>
+            <?php foreach ($questions as $ancre => [$question, $reponse]): ?>
+                <div class="faq-item">
+                    <button class="faq-question" id="<?= $ancre ?>" aria-expanded="false"><?= e($question) ?></button>
+                    <div class="faq-answer"><?= $reponse ?></div>
                 </div>
-                <div class="faq-answer">
-                    You can change your subscription plan at any time from your Account Settings page. 
-                    Navigate to "Membership & Billing" and click "Change Plan" to view available options. 
-                    Upgrades take effect immediately, while downgrades apply at your next billing cycle.
-                </div>
-            </div>
-            
-            <div class="faq-item">
-                <div class="faq-question">
-                    Why was I charged when I canceled my subscription?
-                </div>
-                <div class="faq-answer">
-                    When you cancel, you can continue watching until the end of your current billing period. 
-                    You won't be charged again unless you restart your subscription. The charge you see is 
-                    for the period before you canceled.
-                </div>
-            </div>
-            
-            <div class="faq-item">
-                <div class="faq-question">
-                    How do I update my payment method?
-                </div>
-                <div class="faq-answer">
-                    To update your payment information, go to Account Settings > Membership & Billing. 
-                    Click "Update Payment Method" and enter your new card details. Your changes will 
-                    be saved for future payments.
-                </div>
-            </div>
-            
-            <div class="faq-item" id="streaming">
-                <div class="faq-question">
-                    Why does my video keep buffering?
-                </div>
-                <div class="faq-answer">
-                    Buffering issues are usually related to your internet connection. Try these steps:
-                    <ul style="margin-top: 10px; padding-left: 20px;">
-                        <li>Check your internet speed (we recommend at least 5 Mbps for HD)</li>
-                        <li>Restart your router and device</li>
-                        <li>Reduce the number of devices using your network</li>
-                        <li>Lower the video quality in playback settings</li>
-                    </ul>
-                </div>
-            </div>
-            
-            <div class="faq-item">
-                <div class="faq-question">
-                    Why can't I watch in 4K?
-                </div>
-                <div class="faq-answer">
-                    4K streaming requires:
-                    <ul style="margin-top: 10px; padding-left: 20px;">
-                        <li>A 4K-capable device and display</li>
-                        <li>Internet speed of at least 25 Mbps</li>
-                        <li>A Premium or Ultra HD subscription plan</li>
-                        <li>Content that's available in 4K (look for the Ultra HD badge)</li>
-                    </ul>
-                </div>
-            </div>
-            
-            <div class="faq-item" id="devices">
-                <div class="faq-question">
-                    How do I download movies to watch offline?
-                </div>
-                <div class="faq-answer">
-                    To download content:
-                    <ol style="margin-top: 10px; padding-left: 20px;">
-                        <li>Open the BING app on your mobile device or tablet</li>
-                        <li>Find the movie or show you want to download</li>
-                        <li>Look for the download icon (downward arrow)</li>
-                        <li>Select download quality if prompted</li>
-                        <li>Wait for the download to complete</li>
-                    </ol>
-                    Note: Not all content is available for download due to licensing restrictions.
-                </div>
-            </div>
-            
-            <div class="faq-item" id="profiles">
-                <div class="faq-question">
-                    How many profiles can I create?
-                </div>
-                <div class="faq-answer">
-                    The number of profiles depends on your subscription plan:
-                    <ul style="margin-top: 10px; padding-left: 20px;">
-                        <li>Basic: 2 profiles</li>
-                        <li>Standard: 4 profiles</li>
-                        <li>Premium: 6 profiles</li>
-                    </ul>
-                    Each profile has its own watch history, recommendations, and settings.
-                </div>
-            </div>
-            
-            <div class="faq-item">
-                <div class="faq-question">
-                    How do I set up parental controls?
-                </div>
-                <div class="faq-answer">
-                    To set up parental controls:
-                    <ol style="margin-top: 10px; padding-left: 20px;">
-                        <li>Go to Account Settings > Profiles</li>
-                        <li>Select the profile you want to restrict</li>
-                        <li>Click "Parental Controls"</li>
-                        <li>Set a PIN and choose the maturity level</li>
-                        <li>Save your changes</li>
-                    </ol>
-                    Kids profiles automatically filter content to be age-appropriate.
-                </div>
-            </div>
+            <?php endforeach; ?>
         </div>
-        
+
         <div class="contact-section">
-            <h2 class="section-title">
-                <i class="fas fa-headset"></i> Contact Support
-            </h2>
-            <p style="color: var(--gray); margin-bottom: 20px; line-height: 1.6;">
-                Can't find what you're looking for? Our support team is available 24/7 to help with any questions or issues.
-            </p>
-            
+            <h2 class="section-title"><i class="fas fa-headset"></i> Contact Support</h2>
+            <p class="contact-intro">Can't find what you're looking for? Write to us and we'll get back to you within 24 hours.</p>
             <div class="contact-methods">
                 <div class="contact-method">
-                    <div class="contact-icon">
-                        <i class="fas fa-envelope"></i>
-                    </div>
-                    <h3 class="contact-title">Email Us</h3>
-                    <p class="contact-info">
-                        We'll respond within 24 hours.
-                    </p>
-                    <a href="mailto:support@bingstream.com" class="contact-link">support@bingstream.com</a>
-                </div>
-                
-                <div class="contact-method">
-                    <div class="contact-icon">
-                        <i class="fas fa-phone-alt"></i>
-                    </div>
-                    <h3 class="contact-title">Call Us</h3>
-                    <p class="contact-info">
-                        Available 24/7 for urgent issues.
-                    </p>
-                    <a href="tel:+18005551234" class="contact-link">1-800-555-1234</a>
-                </div>
-                
-                <div class="contact-method">
-                    <div class="contact-icon">
-                        <i class="fas fa-twitter"></i>
-                    </div>
-                    <h3 class="contact-title">Twitter</h3>
-                    <p class="contact-info">
-                        Tweet us @BINGSupport for quick help.
-                    </p>
-                    <a href="https://twitter.com/BINGSupport" target="_blank" class="contact-link">@BINGSupport</a>
+                    <div class="contact-icon"><i class="fas fa-envelope"></i></div>
+                    <h3 class="contact-title">Email</h3>
+                    <p class="contact-info">Replies within 24 hours.</p>
+                    <a href="mailto:support@bing.test" class="contact-link">support@bing.test</a>
                 </div>
             </div>
         </div>
     </div>
-    <script src="/js/help.js"></script>
-</body>
-</html>
+<?php pied(['help.js']); ?>

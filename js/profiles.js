@@ -7,9 +7,10 @@ function hideAddForm() {
     document.getElementById('addProfileForm').classList.remove('active');
 }
 
-function showEditForm(profileId, profileName, avatar) {
+function showEditForm(profileId, profileName, avatar, age) {
     document.getElementById('editProfileId').value = profileId;
     document.getElementById('edit_profile_name').value = profileName;
+    document.getElementById('edit_profile_age').value = age;
     document.getElementById('deleteProfileId').value = profileId;
     
     // Set the current avatar as selected
@@ -84,5 +85,25 @@ window.addEventListener('click', function(event) {
     
     if (event.target.classList.contains('delete-confirm-overlay')) {
         event.target.classList.remove('active');
+    }
+});
+// Boutons de la liste de gestion (les données sont dans des attributs data-, plus d'injection dans onclick)
+document.querySelectorAll('.edit-btn').forEach(bouton => {
+    bouton.addEventListener('click', () => {
+        const d = bouton.dataset;
+        showEditForm(d.id, d.name, d.avatar, d.age);
+    });
+});
+document.querySelectorAll('.delete-btn').forEach(bouton => {
+    bouton.addEventListener('click', () => {
+        hideManageProfiles();
+        showDeleteConfirm(bouton.dataset.id);
+    });
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        document.querySelectorAll('.active').forEach(el => {
+            if (el.matches('.profile-form-container, .manage-profiles-container, .delete-confirm-overlay')) el.classList.remove('active');
+        });
     }
 });

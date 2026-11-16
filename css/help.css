@@ -25,7 +25,7 @@ body {
     color: var(--light);
     min-height: 100vh;
     background-image: linear-gradient(rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.85)),
-                    url('https://m.media-amazon.com/images/M/MV5BZjBlMjIxYzgtOGYyOC00NzY3LTg1ZWMtM2U0NzE0OTQ2YjRlXkEyXkFqcGdeQXVyMTUzMTg2ODkz._V1_.jpg');
+                    url('../images/posters/strangerthings_fond.jpg');
     background-size: cover;
     background-position: center;
     background-attachment: fixed;
@@ -227,3 +227,11 @@ body {
         font-size: 1.3rem;
     }
 }
+/* ---------- Ajouts ---------- */
+button.faq-question { width: 100%; text-align: left; background: none; border: none; color: inherit; font: inherit; }
+.faq-answer ul { margin: 10px 0; padding-left: 20px; }
+.faq-answer p + p, .faq-answer ul + p { margin-top: 10px; }
+.faq-answer a { color: var(--secondary); }
+.contact-intro { color: var(--gray); margin-bottom: 20px; line-height: 1.6; }
+.help-topbar { padding: 20px 40px; }
+.help-topbar img { height: 50px; }

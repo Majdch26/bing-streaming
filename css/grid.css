@@ -1,0 +1,20 @@
+/* Ajouts communs aux grilles Films, Séries et Genres */
+body { background: #0f0f0f; color: #fff; }
+.page-heading { font-size: 1.6rem; font-weight: 600; margin-right: auto; }
+.filter-section { justify-content: space-between; }
+.movie-poster-container, .series-poster-container { display: block; }
+.card-genres { color: var(--secondary); font-size: 0.8rem; margin: -6px 0 10px; }
+.card-actions { display: flex; gap: 10px; align-items: center; }
+.card-actions .watch-button { flex: 1; width: auto; }
+.card-add-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.card-add-button:hover { border-color: var(--secondary); color: var(--secondary); }
+.card-add-button.added { background: var(--secondary); border-color: var(--secondary); color: #000; }

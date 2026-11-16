@@ -1,135 +1,75 @@
 <?php
-session_start();
-require 'db.php';
+require __DIR__ . '/includes/bootstrap.php';
+require __DIR__ . '/includes/layout.php';
 
-/* Verify payment was just completed */
-if (!isset($_SESSION['just_completed_payment'])) {
-    header("Location: signup.php");
-    exit();
+$utilisateur = exiger_connexion();
+$recap = $_SESSION['paiement_termine'] ?? null;
+if (!$recap) {
+    rediriger('profiles.php');
 }
+unset($_SESSION['paiement_termine']);
+$abonnement = abonnement_courant((int) $utilisateur['id']);
+$inscription = $recap['type'] === 'signup';
 
-/* Clear the payment flag */
-unset($_SESSION['just_completed_payment']);
-
-/* Get user info */
-$userName = $_SESSION['user_name'] ?? 'User';
-$planId = $_SESSION['subscription_id'] ?? 0;
-$isUpgrade = isset($_GET['upgrade']) && $_GET['upgrade'] == '1';
-
-/* Get plan details */
-$planNames = array(
-    1 => 'Basic',
-    2 => 'Standard', 
-    3 => 'Premium'
-);
-$planName = $planNames[$planId] ?? 'Selected Plan';
-
-/* Get plan price */
-$stmt = $conn->prepare("SELECT prix FROM abonnement WHERE id = ?");
-$stmt->execute([$planId]);
-$planPrice = $stmt->fetchColumn();
+entete($inscription ? 'Welcome' : 'Plan updated', ['success.css']);
 ?>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?php echo $isUpgrade ? 'Plan Upgraded' : 'Welcome'; ?> - BING Streaming</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/css/success.css">
-</head>
-<body>
     <div class="success-container">
         <div class="progress-steps">
+            <?php foreach ([$inscription ? 'Account' : 'Plan', 'Payment', 'Complete'] as $etape): ?>
             <div class="progress-step">
-                <div class="step-number completed">
-                    <i class="fas fa-check"></i>
-                </div>
-                <div class="step-label completed">Account</div>
+                <div class="step-number completed"><i class="fas fa-check"></i></div>
+                <div class="step-label completed"><?= $etape ?></div>
             </div>
-            <div class="progress-step">
-                <div class="step-number completed">
-                    <i class="fas fa-check"></i>
-                </div>
-                <div class="step-label completed">Payment</div>
-            </div>
-            <div class="progress-step">
-                <div class="step-number completed">
-                    <i class="fas fa-check"></i>
-                </div>
-                <div class="step-label completed">Complete</div>
-            </div>
+            <?php endforeach; ?>
         </div>
-        
+
         <div class="success-card">
-            <div class="success-icon">
-                <i class="fas fa-check"></i>
-            </div>
-            
-            <h1 class="success-title">
-                <?php echo $isUpgrade ? 'Plan Upgrade Complete!' : 'Account Created Successfully!'; ?>
-            </h1>
-            
+            <div class="success-icon"><i class="fas fa-check"></i></div>
+
+            <h1 class="success-title"><?= $inscription ? 'Account Created Successfully!' : 'Your plan is updated!' ?></h1>
+
             <p class="success-message">
-                <?php if ($isUpgrade): ?>
-                    You're now subscribed to <?php echo htmlspecialchars($planName); ?> Plan ($<?php echo $planPrice; ?>/month).<br>
-                    The changes will take effect immediately.
+                <?php if ($inscription): ?>
+                    Welcome to BING, <?= e($utilisateur['nom']) ?>! Your <?= e($recap['offre']) ?> plan is now active.
                 <?php else: ?>
-                    Welcome to BING Streaming, <?php echo htmlspecialchars($userName); ?>!<br>
-                    Your <?php echo htmlspecialchars($planName); ?> Plan ($<?php echo $planPrice; ?>/month) is now active.
+                    You're now subscribed to the <?= e($recap['offre']) ?> plan. The change takes effect immediately.
                 <?php endif; ?>
             </p>
-            
+
             <div class="user-info">
                 <div class="info-row">
                     <span class="info-label">Account:</span>
-                    <span class="info-value"><?php echo htmlspecialchars($userName); ?></span>
+                    <span class="info-value"><?= e($utilisateur['email']) ?></span>
                 </div>
                 <div class="info-row">
                     <span class="info-label">Plan:</span>
-                    <span class="info-value">
-                        <span class="plan-badge"><?php echo htmlspecialchars($planName); ?></span>
-                    </span>
+                    <span class="info-value"><span class="plan-badge"><?= e($recap['offre']) ?></span></span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Billing:</span>
-                    <span class="info-value">$<?php echo $planPrice; ?> per month</span>
+                    <span class="info-label">Paid today:</span>
+                    <span class="info-value">$<?= number_format($recap['montant'], 2) ?> (card ending in <?= e($recap['carte']) ?>)</span>
                 </div>
+                <?php if ($abonnement): ?>
+                <div class="info-row">
+                    <span class="info-label">Renews on:</span>
+                    <span class="info-value"><?= e(date('F j, Y', strtotime($abonnement['date_fin'] . ' +1 day'))) ?></span>
+                </div>
+                <?php endif; ?>
             </div>
-            
+
+            <?php if ($inscription): ?>
             <div class="next-steps">
-                <h3>Next Steps:</h3>
+                <h3>Next steps:</h3>
                 <ul>
                     <li>Create your viewing profiles</li>
                     <li>Start watching</li>
                 </ul>
             </div>
-            
-            <!--<div class="app-download">
-                <a href="#"><img src="https://upload.wikimedia.org/wikipedia/commons/3/3c/Download_on_the_App_Store_Badge.svg" alt="App Store"></a>
-                <a href="#"><img src="https://upload.wikimedia.org/wikipedia/commons/7/78/Google_Play_Store_badge_EN.svg" alt="Google Play"></a>
-            </div>-->
-            
-            <a href="profiles.php" class="continue-button">
-                <?php echo $isUpgrade ? 'Back to Account' : 'Create Profiles'; ?>
-                <i class="fas fa-arrow-right"></i>
+            <?php endif; ?>
+
+            <a href="<?= url($inscription ? 'profiles.php' : 'account.php') ?>" class="continue-button">
+                <?= $inscription ? 'Create Profiles' : 'Back to Account' ?> <i class="fas fa-arrow-right"></i>
             </a>
         </div>
     </div>
-    
-    <script>
-        /* Add animation when page loads */
-        document.addEventListener('DOMContentLoaded', function() {
-            const elements = document.querySelectorAll(
-                '.success-icon, .success-title, .success-message, ' +
-                '.user-info, .next-steps, .app-download, .continue-button'
-            );
-            elements.forEach((el, index) => {
-                el.style.animationDelay = `${index * 0.15}s`;
-            });
-        });
-    </script>
-</body>
-</html>
+<?php pied(); ?>

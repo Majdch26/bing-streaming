@@ -1,96 +1,30 @@
 <?php
-session_start();
-include('db.php');
+require __DIR__ . '/includes/bootstrap.php';
+require __DIR__ . '/includes/layout.php';
+require __DIR__ . '/includes/catalogue.php';
 
-/* Check if genre parameter exists */
-if(!isset($_GET['genre'])) {
-    $_SESSION['error'] = "No genre specified";
-    header("Location: index.php");
-    exit();
+$profil = exiger_profil();
+$favoris = ids_favoris((int) $profil['id']);
+$slug = (string) ($_GET['g'] ?? '');
+
+if ($slug === 'new') {
+    $titrePage = 'New Releases';
+    $videos = videos($profil, "v.date_publication >= date('now', '-4 years')", [], 'v.date_publication DESC');
+} else {
+    $categorie = requete('SELECT * FROM categorie WHERE slug = ?', [$slug])->fetch();
+    if (!$categorie) {
+        flash('error', 'This category does not exist.');
+        rediriger('index.php');
+    }
+    $titrePage = $categorie['nom'];
+    $videos = videos($profil, 'v.id IN (SELECT id_video FROM video_categorie WHERE id_categorie = :c)',
+                     ['c' => $categorie['id']], 'v.nb_spectateurs DESC, v.date_publication DESC');
 }
+$filtre = false;
+$classe = 'movie';
 
-$genre = strtolower($_GET['genre']);
-
-/* Get valid genres from database */
-$validGenres = $conn->query("SELECT DISTINCT LOWER(categorie) AS genre FROM video")->fetchAll(PDO::FETCH_COLUMN);
-
-// Validate genre exists
-if(!in_array($genre, $validGenres)) {
-    $_SESSION['error'] = "Invalid genre: " . htmlspecialchars($genre);
-    header("Location: index.php");
-    exit();
-}
-
-/* Get content for this genre */
-try {
-    $stmt = $conn->prepare("
-        SELECT v.*, 
-               COALESCE(f.duree, SUM(e.duree)) AS duration,
-               COUNT(e.id) AS episodes,
-               CASE 
-                   WHEN f.id_video IS NOT NULL THEN 'movie'
-                   WHEN s.id_video IS NOT NULL THEN 'series'
-               END AS type
-        FROM video v
-        LEFT JOIN film f ON v.id = f.id_video
-        LEFT JOIN serie s ON v.id = s.id_video
-        LEFT JOIN episode e ON s.id_video = e.id_serie
-        WHERE LOWER(v.categorie) = ?
-        GROUP BY v.id
-        ORDER BY v.date_publication DESC
-    ");
-    $stmt->execute([$genre]);
-    $content = $stmt->fetchAll();
-} catch(PDOException $e) {
-    die("Database error: " . $e->getMessage());
-}
-?>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= ucwords(str_replace('-', ' ', $genre)) ?> - BING</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="/css/genre.css">
-</head>
-<body>
-    <?php include('navbar.php'); ?>
-
-    <div class="genre-header">
-        <h1 class="genre-title"><?= ucwords(str_replace('-', ' ', $genre)) ?></h1>
-        <?php if(empty($content)): ?>
-            <p class="error-message">No content found in this category</p>
-        <?php endif; ?>
-    </div>
-
-    <?php if(!empty($content)): ?>
-    <div class="content-grid">
-        <?php foreach($content as $item): 
-            $duration = $item['duration'] ?? 0;
-            $hours = floor($duration / 60);
-            $minutes = $duration % 60;
-        ?>
-        <div class="content-card">
-            <img src="<?= htmlspecialchars($item['image']) ?>" class="content-poster" alt="<?= htmlspecialchars($item['titre']) ?>">
-            <div class="content-info">
-                <h3 class="content-title"><?= htmlspecialchars($item['titre']) ?></h3>
-                <div class="content-meta">
-                    <?php if($item['type'] == 'movie'): ?>
-                        <?= $hours ?>h <?= $minutes ?>m
-                    <?php else: ?>
-                        <?= $item['episodes'] ?> Episodes
-                    <?php endif; ?>
-                </div>
-                <a href="<?= $item['type'] == 'movie' ? 'watch.php?movie=' : 'serie.php?serie=' ?><?= $item['id'] ?>" 
-                   class="watch-button">
-                    <?= $item['type'] == 'movie' ? 'Watch Movie' : 'View Series' ?>
-                </a>
-            </div>
-        </div>
-        <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-</body>
-</html>
+$page = 'genre';
+entete($titrePage, ['navbar.css', 'movies.css', 'grid.css']);
+include __DIR__ . '/includes/navbar.php';
+include __DIR__ . '/includes/grille.php';
+pied(['grid.js']);

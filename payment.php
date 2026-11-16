@@ -1,161 +1,111 @@
 <?php
-session_start();
-require 'db.php';
+/*
+ * Paiement simulé. Trois cas, préparés dans $_SESSION['paiement'] :
+ *  - signup  : création du compte et du premier abonnement
+ *  - change  : passage à une offre plus chère (on paie la différence au prorata)
+ *  - renew   : nouvel abonnement après la fin du précédent
+ */
+require __DIR__ . '/includes/bootstrap.php';
+require __DIR__ . '/includes/layout.php';
 
-/* Check if this is a plan upgrade request */
-if (isset($_GET['action']) && $_GET['action'] == 'plan_upgrade') {
-    /* Verify user is logged in and has plan change data */
-    if (!isset($_SESSION['user_id']) || !isset($_SESSION['plan_change'])) {
-        header("Location: account.php");
-        exit();
-    }
-} 
-/* Otherwise check if this is a new signup */
-elseif ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['nom'], $_POST['email'], $_POST['mot_de_passe'], $_POST['id_abonnement'])) {
-    header("Location: signup.php");
-    exit();
+$paiement = $_SESSION['paiement'] ?? null;
+if (!$paiement) {
+    rediriger(utilisateur_courant() ? 'account.php' : 'pricing.php');
+}
+if ($paiement['type'] !== 'signup' && !utilisateur_courant()) {
+    unset($_SESSION['paiement']);
+    rediriger('login.php');
 }
 
-/* Process payment when form is submitted */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['card'])) {
-    /* Handle plan upgrade payment */
-    if (isset($_GET['action']) && $_GET['action'] == 'plan_upgrade') {
-        /* Basic card validation (in real app, use payment processor) */
-        $card = str_replace(' ', '', $_POST['card']);
-        $expiry = $_POST['expiry'];
-        $cvv = $_POST['cvv'];
+$offre = requete('SELECT * FROM offre WHERE id = ?', [$paiement['offre']])->fetch();
+$erreur = null;
 
-        if (strlen($card) < 15 || strlen($cvv) < 3) {
-            $error = "Invalid card details. Please check your payment information.";
-        } else {
-            try {
-                /* Update user's plan */
-                $stmt = $conn->prepare("UPDATE utilisateur SET id_abonnement = ? WHERE id = ?");
-                $stmt->execute([$_SESSION['plan_change']['new_plan_id'], $_SESSION['user_id']]);
-                
-                /* Update session */
-                $_SESSION['subscription_id'] = $_SESSION['plan_change']['new_plan_id'];
-                unset($_SESSION['plan_change']);
-                
-                /* Redirect to account page with success message */
-                header("Location: account.php?success=1");
-                exit();
-            } catch (PDOException $e) {
-                $error = "Payment processing failed. Please try again.";
+/* Algorithme de Luhn : détecte les fautes de frappe dans un numéro de carte */
+function luhn_valide(string $numero): bool
+{
+    $somme = 0;
+    $double = false;
+    for ($i = strlen($numero) - 1; $i >= 0; $i--) {
+        $chiffre = (int) $numero[$i];
+        if ($double) {
+            $chiffre *= 2;
+            if ($chiffre > 9) {
+                $chiffre -= 9;
             }
         }
-    } 
-    /* Handle new signup payment */
-    else {
-        $nom = trim($_POST['nom']);
-        $email = trim($_POST['email']);
-        $mot_de_passe = password_hash($_POST['mot_de_passe'], PASSWORD_DEFAULT);
-        $id_abonnement = (int)$_POST['id_abonnement'];
+        $somme += $chiffre;
+        $double = !$double;
+    }
+    return $somme % 10 === 0;
+}
 
-        /* Basic card validation (in real app, use payment processor) */
-        $card = str_replace(' ', '', $_POST['card']);
-        $expiry = $_POST['expiry'];
-        $cvv = $_POST['cvv'];
+if (est_post()) {
+    verifier_csrf();
+    $carte = preg_replace('/\D/', '', (string) ($_POST['card'] ?? ''));
+    $expiration = (string) ($_POST['expiry'] ?? '');
+    $cvv = (string) ($_POST['cvv'] ?? '');
 
-        if (strlen($card) < 15 || strlen($cvv) < 3) {
-            $error = "Invalid card details. Please check your payment information.";
-        } else {
-            try {
-                /* Begin transaction */
-                $conn->beginTransaction();
-
-                /* Create user */
-                $stmt = $conn->prepare("INSERT INTO utilisateur (id_abonnement, nom, email, mot_de_passe, date_creation, abonnement_actif)
-                                        VALUES (?, ?, ?, ?, DATE('now'), 1)");
-                $stmt->execute([$id_abonnement, $nom, $email, $mot_de_passe]);
-
-                /* Log the user in */
-                $user_id = $conn->lastInsertId();
-                $_SESSION['user_id'] = $user_id;
-                $_SESSION['user_email'] = $email;
-                $_SESSION['user_name'] = $nom;
-                $_SESSION['subscription_id'] = $id_abonnement;
-                $_SESSION['just_completed_payment'] = true;
-
-                /* Commit transaction */
-                $conn->commit();
-
-                /* Redirect to success page */
-                header("Location: success.php");
-                exit();
-            } catch (PDOException $e) {
-                $conn->rollBack();
-                if ($e->getCode() == 23000) {
-                    $error = "Email already exists. Please use a different email or login.";
-                } else {
-                    $error = "Payment processing failed. Please try again.";
-                }
+    if (strlen($carte) < 13 || strlen($carte) > 19 || !luhn_valide($carte)) {
+        $erreur = 'This card number is not valid. For the demo, use 4242 4242 4242 4242.';
+    } elseif (!preg_match('#^(0[1-9]|1[0-2])/?(\d{2})$#', $expiration, $m)
+              || (int) ('20' . $m[2] . $m[1]) < (int) date('Ym')) {
+        $erreur = 'The expiry date is not valid or has passed.';
+    } elseif (!preg_match('/^\d{3,4}$/', $cvv)) {
+        $erreur = 'The security code (CVV) must have 3 or 4 digits.';
+    } else {
+        try {
+            db()->beginTransaction();
+            if ($paiement['type'] === 'signup') {
+                requete('INSERT INTO utilisateur (nom, email, mot_de_passe_hash) VALUES (?, ?, ?)',
+                        [$paiement['nom'], $paiement['email'], $paiement['hash']]);
+                $idUtilisateur = (int) db()->lastInsertId();
+            } else {
+                $idUtilisateur = (int) utilisateur_courant()['id'];
             }
+            souscrire($idUtilisateur, (int) $paiement['offre']);
+            db()->commit();
+        } catch (Throwable $e) {
+            db()->rollBack();
+            $erreur = str_contains($e->getMessage(), 'UNIQUE')
+                ? 'An account already exists with this email. Please sign in.'
+                : message_erreur($e);
+        }
+
+        if ($erreur === null) {
+            if ($paiement['type'] === 'signup') {
+                session_regenerate_id(true);
+                $_SESSION['user_id'] = $idUtilisateur;
+            }
+            $_SESSION['paiement_termine'] = [
+                'type' => $paiement['type'],
+                'offre' => $offre['nom'],
+                'prix' => (float) $offre['prix_mensuel'],
+                'montant' => (float) $paiement['montant'],
+                'carte' => substr($carte, -4),
+            ];
+            unset($_SESSION['paiement']);
+            rediriger('success.php');
         }
     }
 }
 
-/* Get plan details for display */
-if (isset($_GET['action']) && $_GET['action'] == 'plan_upgrade') {
-    if (!isset($_SESSION['plan_change'])) {
-        header("Location: account.php");
-        exit();
-    }
-    
-    $planChange = $_SESSION['plan_change'];
-    $planId = $planChange['new_plan_id'];
-    
-    $stmt = $conn->prepare("SELECT * FROM abonnement WHERE id = ?");
-    $stmt->execute([$planId]);
-    $plan = $stmt->fetch();
-    $planName = $plan ? htmlspecialchars($plan['nom'] . ' ($' . $plan['prix'] . '/month)') : 'Selected Plan';
-    
-    $amountDue = $planChange['amount_due'];
-} else {
-    $planNames = array(
-        1 => 'Basic ($7.99/month)',
-        2 => 'Standard ($12.99/month)', 
-        3 => 'Premium ($16.99/month)'
-    );
-    $planId = (int)$_POST['id_abonnement'];
-    $planName = $planNames[$planId] ?? 'Selected Plan';
-}
+$titres = ['signup' => 'Complete your subscription to start watching',
+           'change' => 'Complete your plan upgrade',
+           'renew'  => 'Renew your subscription'];
+entete('Payment', ['payment.css']);
 ?>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payment - <?php echo htmlspecialchars($planName); ?></title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/css/payment.css">
-</head>
-<body>
     <div class="payment-container">
         <div class="payment-header">
             <h1 class="payment-title">Payment Details</h1>
-            <?php if (isset($_GET['action']) && $_GET['action'] == 'plan_upgrade'): ?>
-                <p class="payment-subtitle">Complete your plan upgrade</p>
-                <div class="plan-badge">Upgrade to <?php echo $planName; ?></div>
-                <div class="plan-badge" style="background-color: var(--primary); margin-top: 5px;">
-                    Amount Due: $<?php echo $amountDue; ?>
-                </div>
-            <?php else: ?>
-                <p class="payment-subtitle">Complete your subscription to start watching</p>
-                <div class="plan-badge"><?php echo htmlspecialchars($planName); ?></div>
-            <?php endif; ?>
+            <p class="payment-subtitle"><?= e($titres[$paiement['type']]) ?></p>
+            <div class="plan-badge"><?= e($offre['nom']) ?> · $<?= number_format((float) $offre['prix_mensuel'], 2) ?>/month</div>
+            <div class="amount-due">Amount due today: <strong>$<?= number_format((float) $paiement['montant'], 2) ?></strong></div>
         </div>
-        
+
         <div class="progress-steps">
             <div class="progress-step">
-                <div class="step-number <?php echo isset($_GET['action']) ? 'completed' : 'active'; ?>">
-                    <?php echo isset($_GET['action']) ? '<i class="fas fa-check"></i>' : '1'; ?>
-                </div>
-                <div class="step-label <?php echo isset($_GET['action']) ? 'completed' : 'active'; ?>">
-                    <?php echo isset($_GET['action']) ? 'Account' : 'Plan'; ?>
-                </div>
+                <div class="step-number completed"><i class="fas fa-check"></i></div>
+                <div class="step-label completed"><?= $paiement['type'] === 'signup' ? 'Account' : 'Plan' ?></div>
             </div>
             <div class="progress-step">
                 <div class="step-number active">2</div>
@@ -166,83 +116,48 @@ if (isset($_GET['action']) && $_GET['action'] == 'plan_upgrade') {
                 <div class="step-label">Complete</div>
             </div>
         </div>
-        
-        <?php if (isset($error)): ?>
-            <p class="error-message"><?php echo htmlspecialchars($error); ?></p>
-        <?php endif; ?>
-        
-        <form class="payment-form" method="POST">
-            <?php if (isset($_GET['action']) && $_GET['action'] == 'plan_upgrade'): ?>
-                <!-- No hidden fields needed for plan upgrade -->
-            <?php else: ?>
-                <!-- Original signup hidden fields -->
-                <input type="hidden" name="nom" value="<?php echo htmlspecialchars($_POST['nom']); ?>">
-                <input type="hidden" name="email" value="<?php echo htmlspecialchars($_POST['email']); ?>">
-                <input type="hidden" name="mot_de_passe" value="<?php echo htmlspecialchars($_POST['mot_de_passe']); ?>">
-                <input type="hidden" name="id_abonnement" value="<?php echo htmlspecialchars($_POST['id_abonnement']); ?>">
-            <?php endif; ?>
 
+        <?php if ($erreur): ?>
+            <p class="error-message"><?= e($erreur) ?></p>
+        <?php endif; ?>
+
+        <form class="payment-form" method="POST" action="<?= url('payment.php') ?>">
+            <?= champ_csrf() ?>
             <div class="form-group">
-                <label>Card Number</label>
-                <input type="text" name="card" placeholder="1234 5678 9012 3456" required
-                       inputmode="numeric" pattern="[0-9\s]{13,19}" maxlength="19">
+                <label for="card">Card Number</label>
+                <input type="text" id="card" name="card" placeholder="4242 4242 4242 4242" required
+                       inputmode="numeric" autocomplete="cc-number" maxlength="23">
                 <div class="card-icons">
                     <div class="card-icon"><i class="fab fa-cc-visa"></i></div>
                     <div class="card-icon"><i class="fab fa-cc-mastercard"></i></div>
                     <div class="card-icon"><i class="fab fa-cc-amex"></i></div>
-                    <div class="card-icon"><i class="fab fa-cc-discover"></i></div>
                 </div>
             </div>
-            
+
             <div class="card-details">
                 <div class="form-group">
-                    <label>Expiry Date</label>
-                    <input type="text" name="expiry" placeholder="MM/YY" required
-                           pattern="(0[1-9]|1[0-2])\/?([0-9]{2})" maxlength="5">
+                    <label for="expiry">Expiry Date</label>
+                    <input type="text" id="expiry" name="expiry" placeholder="MM/YY" required
+                           inputmode="numeric" autocomplete="cc-exp" maxlength="5">
                 </div>
-                
                 <div class="form-group">
-                    <label>CVV</label>
-                    <input type="text" name="cvv" placeholder="123" required
-                           pattern="[0-9]{3,4}" maxlength="4" inputmode="numeric">
+                    <label for="cvv">CVV</label>
+                    <input type="text" id="cvv" name="cvv" placeholder="123" required
+                           inputmode="numeric" autocomplete="cc-csc" maxlength="4">
                 </div>
             </div>
-            
+
             <button type="submit" class="submit-button">
-                <?php echo isset($_GET['action']) ? 'Complete Upgrade' : 'Complete Subscription'; ?> <i class="fas fa-lock"></i>
+                Pay $<?= number_format((float) $paiement['montant'], 2) ?> <i class="fas fa-lock"></i>
             </button>
-            
+
             <div class="secure-payment">
-                <i class="fas fa-lock"></i>
-                <span>Secure 256-bit SSL encrypted payment</span>
+                <i class="fas fa-info-circle"></i>
+                <span>Demo only: no payment is made and card details are never stored.</span>
+            </div>
+            <div class="secure-payment">
+                <a href="<?= url($paiement['type'] === 'signup' ? 'pricing.php' : 'account.php') ?>">Cancel</a>
             </div>
         </form>
     </div>
-    
-    <script>
-        /* Format card number input */
-        document.querySelector('input[name="card"]').addEventListener('input', function(e) {
-            let value = e.target.value.replace(/\D/g, '');
-            value = value.replace(/(\d{4})(?=\d)/g, '$1 ');
-            e.target.value = value.trim();
-        });
-
-        /* Format expiry date input */
-        document.querySelector('input[name="expiry"]').addEventListener('input', function(e) {
-            let value = e.target.value.replace(/\D/g, '');
-            if (value.length > 2) {
-                value = value.substring(0, 2) + '/' + value.substring(2, 4);
-            }
-            e.target.value = value;
-        });
-
-        /* Add animation when page loads */
-        document.addEventListener('DOMContentLoaded', function() {
-            const formGroups = document.querySelectorAll('.form-group');
-            formGroups.forEach((group, index) => {
-                group.style.animationDelay = `${index * 0.1}s`;
-            });
-        });
-    </script>
-</body>
-</html>
+<?php pied(['forms.js']); ?>

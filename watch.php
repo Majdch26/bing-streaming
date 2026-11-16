@@ -1,252 +1,142 @@
 <?php
-session_start();
-include('db.php');
+require __DIR__ . '/includes/bootstrap.php';
+require __DIR__ . '/includes/layout.php';
+require __DIR__ . '/includes/catalogue.php';
 
-if (!isset($_SESSION['user_id']) || !isset($_SESSION['profile_id'])) {
-    header("Location: login.php");
-    exit();
+$profil = exiger_profil();
+$idFilm = isset($_GET['movie']) ? (int) $_GET['movie'] : null;
+$idEpisode = isset($_GET['episode']) ? (int) $_GET['episode'] : null;
+
+if ($idFilm !== null) {
+    $video = videos($profil, "v.id = :id AND v.type = 'film'", ['id' => $idFilm])[0] ?? null;
+    if ($video) {
+        $video += requete('SELECT url_video, duree FROM film WHERE id_video = ?', [$idFilm])->fetch();
+        $idVideo = $idFilm;
+    }
+} elseif ($idEpisode !== null) {
+    $episode = requete('SELECT * FROM episode WHERE id = ?', [$idEpisode])->fetch();
+    $video = $episode ? (videos($profil, 'v.id = :id', ['id' => $episode['id_serie']])[0] ?? null) : null;
+    if ($video) {
+        $idVideo = (int) $video['id'];
+        $suivant = requete('SELECT id, numero_saison, numero_episode, titre FROM episode
+                            WHERE id_serie = :s AND (numero_saison > :n OR (numero_saison = :n AND numero_episode > :e))
+                            ORDER BY numero_saison, numero_episode LIMIT 1',
+                           ['s' => $idVideo, 'n' => $episode['numero_saison'], 'e' => $episode['numero_episode']])->fetch();
+    }
 }
 
-/* Check if we're watching a movie or episode */
-if (isset($_GET['movie'])) {
-    $video_id = (int)$_GET['movie'];
-    $video_type = 'movie';
-} elseif (isset($_GET['episode'])) {
-    $video_id = (int)$_GET['episode'];
-    $video_type = 'episode';
-    $series_id = isset($_GET['serie']) ? (int)$_GET['serie'] : 0;
-    $season_num = isset($_GET['season']) ? (int)$_GET['season'] : 1;
-} else {
-    header("Location: home.php");
-    exit();
+if (empty($video)) {
+    flash('error', 'This title is not available for this profile.');
+    rediriger('index.php');
 }
 
-/* Get video details based on type */
-if ($video_type === 'movie') {
-    $stmt = $conn->prepare("
-        SELECT v.*, f.url_video, f.duree as video_duree, 0 as is_favorite
-        FROM video v 
-        JOIN film f ON v.id = f.id_video
-        WHERE v.id = ?
-    ");
-    $stmt->execute([$video_id]);
-} else {
-    $stmt = $conn->prepare("
-        SELECT e.*, v.titre as serie_title, v.image as serie_image, 
-               v.categorie as serie_categorie, v.date_publication as serie_date,
-               0 as is_favorite
-        FROM episode e
-        JOIN video v ON e.id_serie = v.id
-        WHERE e.id = ? AND e.numero_saison = ?
-    ");
-    $stmt->execute([$video_id, $season_num]);
-}
+$source = $idFilm !== null ? $video['url_video'] : $episode['url_video'];
+$titre = $idFilm !== null ? $video['titre'] : $episode['titre'];
+$description = $idFilm !== null ? $video['description'] : $episode['description'];
+$dureeMinutes = (int) ($idFilm !== null ? $video['duree'] : $episode['duree']);
+$affiche = $idFilm !== null ? ($video['image_fond'] ?: $video['image'])
+                            : ($episode['image_episode'] ?: ($video['image_fond'] ?: $video['image']));
 
-$video = $stmt->fetch();
+$soustitres = requete('SELECT langue, libelle, url_fichier FROM soustitre WHERE id_film IS ? AND id_episode IS ? ORDER BY libelle',
+                      [$idFilm, $idEpisode])->fetchAll();
+$position = position_lecture((int) $profil['id'], $idFilm, $idEpisode);
+$reprendreA = ($position['duree_secondes'] > 0 && $position['position_secondes'] < 0.95 * $position['duree_secondes'])
+    ? (int) $position['position_secondes'] : 0;
 
-if (!$video) {
-    header("Location: home.php");
-    exit();
-}
+$similaires = videos_similaires($profil, $idVideo, 8);
+$favori = in_array($idVideo, ids_favoris((int) $profil['id']), true);
 
-/* Set default values for missing fields */
-$video['categorie'] = $video['categorie'] ?? ($video['serie_categorie'] ?? 'Unknown');
-$video['date_publication'] = $video['date_publication'] ?? ($video['serie_date'] ?? null);
-$video['duree'] = $video['duree'] ?? ($video['video_duree'] ?? 0);
-
-/* Get similar videos */
-if ($video_type === 'movie') {
-    $similar_stmt = $conn->prepare("
-        SELECT v.* FROM video v 
-        JOIN film f ON v.id = f.id_video
-        WHERE v.categorie = ? AND v.id != ?
-        ORDER BY RANDOM() 
-        LIMIT 5
-    ");
-    $similar_stmt->execute([$video['categorie'], $video_id]);
-} else {
-    $similar_stmt = $conn->prepare("
-        SELECT v.* FROM video v 
-        JOIN serie s ON v.id = s.id_video
-        WHERE v.categorie = ? AND v.id != ?
-        ORDER BY RANDOM() 
-        LIMIT 5
-    ");
-    $similar_stmt->execute([$video['categorie'], $series_id]);
-}
-
-$similar = $similar_stmt->fetchAll();
-
-/* Get next episode if available */
-$next_episode = null;
-if ($video_type === 'episode') {
-    $next_stmt = $conn->prepare("
-        SELECT id FROM episode 
-        WHERE id_serie = ? AND numero_saison = ? AND numero_episode = ?
-        LIMIT 1
-    ");
-    $next_stmt->execute([$series_id, $season_num, $video['numero_episode'] + 1]);
-    $next_episode = $next_stmt->fetch();
-}
+$page = $idFilm !== null ? 'movies' : 'series';
+entete($idFilm !== null ? $titre : $titre . ' | ' . $video['titre'], ['navbar.css', 'watch.css'], ['plyr' => true]);
+include __DIR__ . '/includes/navbar.php';
 ?>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= htmlspecialchars($video_type === 'movie' ? $video['titre'] : $video['titre'] . ' | ' . $video['serie_title']) ?> | BING</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
-    <link rel="stylesheet" href="/css/watch.css">
-</head>
-<body>
-    <div class="loading-screen">
-        <div class="loading-logo"></div>
-    </div>
-    <?php include('navbar.php'); ?>
-    
     <div class="video-container">
-        <video id="player" playsinline controls data-poster="<?= htmlspecialchars($video_type === 'movie' ? $video['image'] : ($video['serie_image'] ?? '')) ?>">
-            <source src="<?= htmlspecialchars($video_type === 'movie' ? $video['url_video'] : ($video['url_video'] ?? '')) ?>" type="video/mp4">
+        <video id="player" playsinline controls data-poster="<?= e(url($affiche)) ?>"
+               data-movie="<?= $idFilm ?? '' ?>" data-episode="<?= $idEpisode ?? '' ?>"
+               data-resume="<?= $reprendreA ?>"
+               data-next="<?= !empty($suivant) ? e(url('watch.php?episode=' . $suivant['id'])) : '' ?>">
+            <source src="<?= e($source) ?>" type="video/mp4">
+            <?php foreach ($soustitres as $i => $piste): ?>
+                <track kind="captions" label="<?= e($piste['libelle']) ?>" srclang="<?= e($piste['langue']) ?>" src="<?= e(url($piste['url_fichier'])) ?>"<?= $i === 0 ? ' default' : '' ?>>
+            <?php endforeach; ?>
         </video>
+        <div class="next-overlay" id="nextOverlay" hidden>
+            <?php if (!empty($suivant)): ?>
+                <p>Next episode in <strong id="nextCountdown">8</strong> s</p>
+                <p class="next-title">S<?= (int) $suivant['numero_saison'] ?> E<?= (int) $suivant['numero_episode'] ?> · <?= e($suivant['titre']) ?></p>
+                <div class="next-buttons">
+                    <a class="action-button play-button" href="<?= url('watch.php?episode=' . (int) $suivant['id']) ?>">Play now</a>
+                    <button type="button" class="action-button" id="nextCancel">Cancel</button>
+                </div>
+            <?php endif; ?>
+        </div>
+        <p class="video-error" id="videoError" hidden>The video could not be loaded. Check your connection and try again.</p>
     </div>
-    
+
     <div class="video-info">
-        <h1 class="video-title"><?= htmlspecialchars($video_type === 'movie' ? $video['titre'] : ($video['titre'] ?? 'Untitled')) ?></h1>
-        <?php if ($video_type === 'episode'): ?>
+        <h1 class="video-title"><?= e($titre) ?></h1>
+        <?php if ($idEpisode !== null): ?>
             <div class="series-title">
                 <i class="fas fa-tv"></i>
-                <?= htmlspecialchars($video['serie_title'] ?? 'Unknown Series') ?> • S<?= $season_num ?> E<?= $video['numero_episode'] ?? 1 ?>
+                <a href="<?= url('serie.php?serie=' . $idVideo) ?>"><?= e($video['titre']) ?></a> • S<?= (int) $episode['numero_saison'] ?> E<?= (int) $episode['numero_episode'] ?>
             </div>
         <?php endif; ?>
-        
+
         <div class="video-meta">
-            <!--<span class="meta-item match-percentage">
-                <i class="fas fa-thumbs-up"></i> 95% Match
-            </span>-->
-            <span class="meta-item">
-                <i class="far fa-calendar"></i> <?= isset($video['date_publication']) ? date('Y', strtotime($video['date_publication'])) : 'Unknown' ?>
-            </span>
-            <span class="meta-item">
-                <i class="far fa-clock"></i>
-                <?php if ($video_type === 'movie'): ?>
-                    <?= floor(($video['duree'] ?? 0) / 60) ?>h <?= ($video['duree'] ?? 0) % 60 ?>m
-                <?php else: ?>
-                    <?= floor(($video['duree'] ?? 0) / 60) ?>m
-                <?php endif; ?>
-            </span>
-            <span class="meta-item quality-badge">
-                <i class="fas fa-high-definition"></i> HD
-            </span>
-            <span class="meta-item">
-                <i class="fas fa-closed-captioning"></i> Subtitles
-            </span>
+            <span class="meta-item"><span class="age-badge"><?= age_libelle((int) $video['age_minimum']) ?></span></span>
+            <span class="meta-item"><i class="far fa-calendar"></i> <?= annee($video['date_publication']) ?></span>
+            <span class="meta-item"><i class="far fa-clock"></i> <?= duree($dureeMinutes) ?></span>
+            <span class="meta-item"><i class="fas fa-language"></i> <?= e($video['langue_originale']) ?></span>
+            <?php if ($soustitres): ?>
+                <span class="meta-item"><i class="fas fa-closed-captioning"></i> <?= e(implode(', ', array_column($soustitres, 'libelle'))) ?></span>
+            <?php endif; ?>
+            <?php if ($reprendreA > 0): ?>
+                <span class="meta-item resume-info"><i class="fas fa-history"></i> Resuming at <?= gmdate($reprendreA >= 3600 ? 'G:i:s' : 'i:s', $reprendreA) ?></span>
+            <?php endif; ?>
         </div>
-        
-        <p class="video-description">
-            <?= htmlspecialchars($video_type === 'movie' ? ($video['description'] ?? 'No description available') : ($video['description'] ?? 'No episode description')) ?>
-        </p>
-        
+
+        <p class="video-description"><?= e($description) ?></p>
+        <p class="video-genres"><?= e($video['categories']) ?></p>
+
         <div class="action-buttons">
-            <!--<button class="action-button">
-                <i class="fas fa-plus"></i>
-                <span>My List</span>
-            </button>
-            <button class="action-button">
-                <i class="fas fa-share-alt"></i>
-                <span>Share</span>
-            </button>
-            <button class="action-button">
-                <i class="fas fa-heart"></i>
-                <span>Rate</span>
-            </button>-->
-            <?php if ($video_type === 'episode'): ?>
-                <a href="serie.php?serie=<?= $series_id ?>" class="action-button">
-                    <i class="fas fa-tv"></i>
-                    <span>View Series</span>
+            <form method="post" action="<?= url('api/favorite.php') ?>" class="favorite-form">
+                <?= champ_csrf() ?>
+                <input type="hidden" name="video_id" value="<?= $idVideo ?>">
+                <input type="hidden" name="action" value="toggle">
+                <button type="submit" class="action-button<?= $favori ? ' added' : '' ?>">
+                    <i class="fas <?= $favori ? 'fa-check' : 'fa-plus' ?>"></i> <span class="label"><?= $favori ? 'In My List' : 'My List' ?></span>
+                </button>
+            </form>
+            <?php if ($idEpisode !== null): ?>
+                <a href="<?= url('serie.php?serie=' . $idVideo) ?>" class="action-button">
+                    <i class="fas fa-list"></i> <span>All Episodes</span>
                 </a>
-                <?php if ($next_episode): ?>
-                    <a href="watch.php?serie=<?= $series_id ?>&season=<?= $season_num ?>&episode=<?= $next_episode['id'] ?>" class="action-button play-button">
-                        <i class="fas fa-play"></i>
-                        <span>Next Episode</span>
+                <?php if (!empty($suivant)): ?>
+                    <a href="<?= url('watch.php?episode=' . (int) $suivant['id']) ?>" class="action-button play-button">
+                        <i class="fas fa-forward"></i> <span>Next Episode</span>
                     </a>
                 <?php endif; ?>
             <?php endif; ?>
         </div>
     </div>
-    
-    <?php if (!empty($similar)): ?>
+
+    <?php if ($similaires): ?>
         <div class="similar-section">
             <h2 class="section-title">More Like This</h2>
             <div class="similar-row">
-                <?php foreach ($similar as $similar_video): ?>
-                    <div class="similar-card" onclick="location.href='<?= $video_type === 'movie' ? 'watch.php?movie=' . $similar_video['id'] : 'serie.php?serie=' . $similar_video['id'] ?>'">
-                        <img src="<?= htmlspecialchars($similar_video['image'] ?? '') ?>" alt="<?= htmlspecialchars($similar_video['titre'] ?? '') ?>" class="similar-thumbnail">
+                <?php foreach ($similaires as $autre): ?>
+                    <a class="similar-card" href="<?= url($autre['type'] === 'film' ? 'watch.php?movie=' . $autre['id'] : 'serie.php?serie=' . $autre['id']) ?>">
+                        <img src="<?= e(url($autre['image'])) ?>" alt="" class="similar-thumbnail" loading="lazy">
                         <div class="similar-info">
-                            <div class="similar-title"><?= htmlspecialchars($similar_video['titre'] ?? 'Untitled') ?></div>
+                            <div class="similar-title"><?= e($autre['titre']) ?></div>
                             <div class="similar-meta">
-                                <span><?= isset($similar_video['date_publication']) ? date('Y', strtotime($similar_video['date_publication'])) : 'Unknown' ?></span>
-                                <span class="quality-badge">HD</span>
+                                <span><?= annee($autre['date_publication']) ?></span>
+                                <span class="quality-badge"><?= $autre['type'] === 'film' ? 'Movie' : 'Series' ?></span>
                             </div>
                         </div>
-                    </div>
+                    </a>
                 <?php endforeach; ?>
             </div>
         </div>
     <?php endif; ?>
-    
-    <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
-    <script>
-        const player = new Plyr('#player', {
-            controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
-            settings: ['captions', 'quality', 'speed'],
-            keyboard: { focused: true, global: true },
-            tooltips: { controls: true, seek: true },
-            ratio: '16:9'
-        });
-        
-        /* Customize player colors to match theme */
-        document.documentElement.style.setProperty('--plyr-color-main', 'var(--secondary)');
-        document.documentElement.style.setProperty('--plyr-video-control-color', 'var(--light)');
-        document.documentElement.style.setProperty('--plyr-video-control-color-hover', 'var(--light)');
-        document.documentElement.style.setProperty('--plyr-video-progress-buffered-background', 'rgba(255, 255, 255, 0.2)');
-        document.documentElement.style.setProperty('--plyr-menu-background', 'var(--dark)');
-        document.documentElement.style.setProperty('--plyr-menu-color', 'var(--light)');
-        document.documentElement.style.setProperty('--plyr-menu-item-arrow-color', 'var(--gray)');
-        document.documentElement.style.setProperty('--plyr-menu-shadow', '0 5px 20px rgba(0, 0, 0, 0.5)');
-        
-        /* Add hover effect to similar cards */
-        document.querySelectorAll('.similar-card').forEach(card => {
-            card.addEventListener('mouseenter', () => {
-                card.querySelector('.similar-thumbnail').style.transform = 'scale(1.05)';
-            });
-            
-            card.addEventListener('mouseleave', () => {
-                card.querySelector('.similar-thumbnail').style.transform = 'scale(1)';
-            });
-        });
-
-        /* Loading screen */
-window.addEventListener('load', function() {
-    setTimeout(function() {
-        document.querySelector('.loading-screen').style.opacity = '0';
-        setTimeout(function() {
-            document.querySelector('.loading-screen').style.display = 'none';
-        }, 500);
-    }, 1000);
-});
-    </script>
-</body>
-</html>
-
-
-
-
-
-
-
-
-
-
-
+<?php pied(['vendor/plyr/plyr.min.js', 'watch.js']); ?>

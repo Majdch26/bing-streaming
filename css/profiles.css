@@ -30,7 +30,7 @@ body {
     min-height: 100vh;
     padding: 20px;
     background-image: linear-gradient(rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.85)),
-                    url('https://m.media-amazon.com/images/M/MV5BZjBlMjIxYzgtOGYyOC00NzY3LTg1ZWMtM2U0NzE0OTQ2YjRlXkEyXkFqcGdeQXVyMTUzMTg2ODkz._V1_.jpg');
+                    url('../images/posters/strangerthings_fond.jpg');
     background-size: cover;
     background-position: center;
     background-attachment: fixed;
@@ -591,3 +591,22 @@ body {
         grid-template-columns: repeat(2, 1fr);
     }
 }
+/* Ajouts */
+.profiles-logo { width: 130px; display: block; margin: 0 auto 20px; }
+.profile-select, .add-profile { background: none; border: none; cursor: pointer; padding: 0; font: inherit; color: inherit; }
+.profile-kids {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.profiles-quota { color: var(--gray); margin: 10px 0 25px; font-size: 0.9rem; }
+.profiles-account-link { display: block; margin-top: 18px; color: var(--gray); text-decoration: none; font-size: 0.9rem; }
+.profiles-account-link:hover { color: var(--secondary); }
+.btn-block { width: 100%; }
+.manage-profile-name small { color: var(--gray); font-weight: 400; }
+.profiles-container .error-message a { color: var(--secondary); }

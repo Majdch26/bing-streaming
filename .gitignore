@@ -1,0 +1,5 @@
+data/*.sqlite
+data/*.sqlite-*
+tests/__pycache__/
+.DS_Store
+._*

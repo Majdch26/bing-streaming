@@ -30,7 +30,7 @@ body {
     justify-content: center;
     padding: 20px;
     background-image: linear-gradient(rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.85)),
-                    url('https://m.media-amazon.com/images/M/MV5BZjBlMjIxYzgtOGYyOC00NzY3LTg1ZWMtM2U0NzE0OTQ2YjRlXkEyXkFqcGdeQXVyMTUzMTg2ODkz._V1_.jpg');
+                    url('../images/posters/strangerthings_fond.jpg');
     background-size: cover;
     background-position: center;
     background-attachment: fixed;
@@ -277,3 +277,6 @@ body {
         padding: 25px 20px;
     }
 }
+.amount-due { margin-top: 12px; color: var(--light-gray); }
+.amount-due strong { color: var(--secondary); font-size: 1.2em; }
+.secure-payment a { color: var(--gray); }

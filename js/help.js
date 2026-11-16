@@ -1,35 +1,24 @@
-        // FAQ Accordion
-        document.querySelectorAll('.faq-question').forEach(question => {
-            question.addEventListener('click', () => {
-                const answer = question.nextElementSibling;
-                question.classList.toggle('active');
-                answer.classList.toggle('show');
-                
-                // Close other open answers
-                document.querySelectorAll('.faq-question').forEach(q => {
-                    if (q !== question && q.classList.contains('active')) {
-                        q.classList.remove('active');
-                        q.nextElementSibling.classList.remove('show');
-                    }
-                });
-            });
-        });
+/* Questions fréquentes en accordéon ; un lien help.php#ancre ouvre directement la bonne question */
+document.querySelectorAll('.faq-question').forEach((question) => {
+  question.addEventListener('click', () => {
+    const ouverte = question.classList.contains('active');
+    document.querySelectorAll('.faq-question').forEach((q) => {
+      q.classList.remove('active');
+      q.setAttribute('aria-expanded', 'false');
+      q.nextElementSibling.classList.remove('show');
+    });
+    if (!ouverte) {
+      question.classList.add('active');
+      question.setAttribute('aria-expanded', 'true');
+      question.nextElementSibling.classList.add('show');
+    }
+  });
+});
 
-        // Add animation when page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            const elements = document.querySelectorAll('.faq-item, .contact-method');
-            elements.forEach((el, index) => {
-                el.style.animationDelay = `${index * 0.1}s`;
-            });
-            
-            // Check URL hash to open specific FAQ
-            if (window.location.hash) {
-                const target = document.querySelector(window.location.hash);
-                if (target && target.classList.contains('faq-question')) {
-                    target.click();
-                    setTimeout(() => {
-                        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }, 300);
-                }
-            }
-        });
+if (window.location.hash) {
+  const cible = document.querySelector(window.location.hash);
+  if (cible && cible.classList.contains('faq-question')) {
+    cible.click();
+    setTimeout(() => cible.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200);
+  }
+}

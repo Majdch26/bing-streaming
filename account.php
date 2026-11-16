@@ -1,356 +1,336 @@
 <?php
-session_start();
-include('db.php');
+require __DIR__ . '/includes/bootstrap.php';
+require __DIR__ . '/includes/layout.php';
 
-if (!isset($_SESSION['user_id'])) {
-    header("Location: login.php");
-    exit();
+$utilisateur = exiger_connexion();
+$idUtilisateur = (int) $utilisateur['id'];
+$abonnement = abonnement_courant($idUtilisateur);
+$offres = requete('SELECT * FROM offre WHERE disponible = 1 ORDER BY prix_mensuel')->fetchAll();
+
+/* Profils qui seront supprimés si l'offre autorise moins de profils :
+   on garde le profil en cours, puis les plus anciens */
+function profils_en_trop(int $idUtilisateur, int $max): array
+{
+    $profils = requete('SELECT id, nom FROM profils WHERE id_utilisateur = ?
+                        ORDER BY (id = ?) DESC, id', [$idUtilisateur, (int) ($_SESSION['profile_id'] ?? 0)])->fetchAll();
+    return array_slice($profils, $max);
 }
 
-/* Get user details */
-$stmt = $conn->prepare("SELECT u.*, a.nom as abonnement_nom, a.prix, a.nb_profile_max FROM utilisateur u JOIN abonnement a ON u.id_abonnement = a.id WHERE u.id = ?");
-$stmt->execute([$_SESSION['user_id']]);
-$user = $stmt->fetch();
+/* Montant à payer tout de suite pour passer à une offre plus chère :
+   la différence de prix, au prorata des jours restants */
+function montant_changement(array $abonnement, array $offre): float
+{
+    $debut = new DateTimeImmutable($abonnement['date_debut']);
+    $fin = new DateTimeImmutable($abonnement['date_fin']);
+    $joursPeriode = max(1, $debut->diff($fin)->days + 1);
+    $joursRestants = max(1, (new DateTimeImmutable('today'))->diff($fin)->days + 1);
+    $difference = max(0, $offre['prix_mensuel'] - $abonnement['prix_mensuel']);
+    // Prorata sur un mois : la différence s'applique aux jours restants du mois en cours
+    $joursMois = min($joursPeriode, 31);
+    return max(0.01, round($difference * min($joursRestants, $joursMois) / $joursMois, 2));
+}
 
-/* Get all available plans */
-$plans_stmt = $conn->query("SELECT * FROM abonnement ORDER BY prix ASC");
-$plans = $plans_stmt->fetchAll();
+if (est_post()) {
+    verifier_csrf();
+    $action = $_POST['action'] ?? '';
 
-/* Handle password change */
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['change_password'])) {
-    $current_password = $_POST['current_password'];
-    $new_password = $_POST['new_password'];
-    $confirm_password = $_POST['confirm_password'];
-    
-    if (password_verify($current_password, $user['mot_de_passe'])) {
-        if ($new_password === $confirm_password) {
-            $hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
-            $stmt = $conn->prepare("UPDATE utilisateur SET mot_de_passe = ? WHERE id = ?");
-            $stmt->execute([$hashed_password, $_SESSION['user_id']]);
-            $password_success = "Password changed successfully!";
+    if ($action === 'password') {
+        $actuel = (string) ($_POST['current_password'] ?? '');
+        $nouveau = (string) ($_POST['new_password'] ?? '');
+        $hash = requete('SELECT mot_de_passe_hash FROM utilisateur WHERE id = ?', [$idUtilisateur])->fetchColumn();
+        if (!password_verify($actuel, $hash)) {
+            flash('error', 'Your current password is incorrect.');
+        } elseif (strlen($nouveau) < 8) {
+            flash('error', 'Your new password must contain at least 8 characters.');
+        } elseif ($nouveau !== ($_POST['confirm_password'] ?? '')) {
+            flash('error', "The new passwords don't match.");
+        } elseif ($nouveau === $actuel) {
+            flash('error', 'The new password must be different from the current one.');
         } else {
-            $password_error = "New passwords don't match.";
+            requete('UPDATE utilisateur SET mot_de_passe_hash = ? WHERE id = ?', [password_hash($nouveau, PASSWORD_DEFAULT), $idUtilisateur]);
+            session_regenerate_id(true);
+            flash('success', 'Password changed successfully.');
         }
-    } else {
-        $password_error = "Current password is incorrect.";
+        rediriger('account.php#change-password');
     }
-}
 
-/* Handle plan change confirmation */
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm_plan_change'])) {
-    $new_plan_id = (int)$_POST['new_plan_id'];
-    
-    /* Get new plan details */
-    $new_plan = null;
-    foreach ($plans as $plan) {
-        if ($plan['id'] == $new_plan_id) {
-            $new_plan = $plan;
-            break;
+    if ($action === 'change_plan' || $action === 'confirm_downgrade') {
+        $offre = requete('SELECT * FROM offre WHERE id = ? AND disponible = 1', [(int) ($_POST['new_plan_id'] ?? 0)])->fetch();
+        if (!$offre) {
+            flash('error', 'Please choose an available plan.');
+            rediriger('account.php#plan');
         }
-    }
-    
-    if ($new_plan) {
+
+        if (!$abonnement) {
+            // Pas d'abonnement en cours : on paie le premier mois de la nouvelle offre
+            $_SESSION['paiement'] = ['type' => 'renew', 'offre' => (int) $offre['id'], 'montant' => (float) $offre['prix_mensuel']];
+            rediriger('payment.php');
+        }
+        if ((int) $offre['id'] === (int) $abonnement['id_offre']) {
+            flash('success', 'You are already on this plan.');
+            rediriger('account.php');
+        }
+        if ($offre['prix_mensuel'] > $abonnement['prix_mensuel']) {
+            $_SESSION['paiement'] = ['type' => 'change', 'offre' => (int) $offre['id'],
+                                     'montant' => montant_changement($abonnement, $offre)];
+            rediriger('payment.php');
+        }
+
+        // Offre moins chère : pas de paiement, mais il faut peut-être supprimer des profils
+        $enTrop = profils_en_trop($idUtilisateur, (int) $offre['nb_profils_max']);
+        if ($enTrop && $action !== 'confirm_downgrade') {
+            $_SESSION['changement_en_attente'] = (int) $offre['id'];
+            rediriger('account.php?confirm=1#plan');
+        }
         try {
-            /* Check if downgrading (fewer profiles allowed) */
-            if ($new_plan['nb_profile_max'] < $user['nb_profile_max']) {
-                /* Get current profiles ordered by creation date (oldest first) */
-                $profile_stmt = $conn->prepare("SELECT id FROM profils WHERE id_utilisateur = ? ORDER BY id ASC");
-                $profile_stmt->execute([$_SESSION['user_id']]);
-                $all_profiles = $profile_stmt->fetchAll(PDO::FETCH_COLUMN);
-                
-                $profiles_to_keep = $new_plan['nb_profile_max'];
-                $profiles_to_delete = array_slice($all_profiles, $profiles_to_keep);
-                
-                if (!empty($profiles_to_delete)) {
-                    /* Delete excess profiles (keeping newest ones) */
-                    $placeholders = rtrim(str_repeat('?,', count($profiles_to_delete)), ',');
-                    $delete_stmt = $conn->prepare("DELETE FROM profils WHERE id IN ($placeholders)");
-                    $delete_stmt->execute($profiles_to_delete);
-                }
+            db()->beginTransaction();
+            foreach ($enTrop as $profil) {
+                requete('DELETE FROM profils WHERE id = ? AND id_utilisateur = ?', [$profil['id'], $idUtilisateur]);
             }
-            
-            /* Update the plan */
-            $stmt = $conn->prepare("UPDATE utilisateur SET id_abonnement = ? WHERE id = ?");
-            $stmt->execute([$new_plan_id, $_SESSION['user_id']]);
-            
-            /* Update session */
-            $_SESSION['subscription_id'] = $new_plan_id;
-            header("Location: account.php?success=1");
-            exit();
-        } catch (PDOException $e) {
-            $error = "Plan change failed. Please try again.";
+            souscrire($idUtilisateur, (int) $offre['id']);
+            db()->commit();
+            unset($_SESSION['changement_en_attente']);
+            flash('success', 'Your plan has been changed to ' . $offre['nom'] . '.');
+        } catch (Throwable $e) {
+            db()->rollBack();
+            flash('error', message_erreur($e));
         }
+        rediriger('account.php');
     }
-}
 
-/* Handle plan change initiation */
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['change_plan'])) {
-    $new_plan_id = (int)$_POST['new_plan_id'];
-    $current_plan_id = $user['id_abonnement'];
-    
-    /* Get both plans */
-    $current_plan = null;
-    $new_plan = null;
-    foreach ($plans as $plan) {
-        if ($plan['id'] == $current_plan_id) $current_plan = $plan;
-        if ($plan['id'] == $new_plan_id) $new_plan = $plan;
-        if ($current_plan && $new_plan) break;
-    }
-    
-    if ($new_plan) {
-        /* Check if upgrade (needs payment) */
-        if ($new_plan['prix'] > $current_plan['prix']) {
-            $difference = $new_plan['prix'] - $current_plan['prix'];
-            $_SESSION['plan_change'] = [
-                'current_plan_id' => $current_plan_id,
-                'current_plan_price' => $current_plan['prix'],
-                'current_plan_name' => $current_plan['nom'],
-                'new_plan_id' => $new_plan_id,
-                'new_plan_price' => $new_plan['prix'],
-                'new_plan_name' => $new_plan['nom'],
-                'amount_due' => $difference,
-                'user_id' => $_SESSION['user_id']
-            ];
-            header("Location: payment.php?action=plan_upgrade");
-            exit();
+    if ($action === 'delete_account') {
+        $hash = requete('SELECT mot_de_passe_hash FROM utilisateur WHERE id = ?', [$idUtilisateur])->fetchColumn();
+        if ($utilisateur['est_admin']) {
+            flash('error', 'Administrator accounts cannot be deleted from this page.');
+        } elseif (!password_verify((string) ($_POST['password'] ?? ''), $hash)) {
+            flash('error', 'Incorrect password: your account was not deleted.');
         } else {
-            /* Downgrade or same price - check profile count */
-            try {
-                $profile_stmt = $conn->prepare("SELECT COUNT(*) as profile_count FROM profils WHERE id_utilisateur = ?");
-                $profile_stmt->execute([$_SESSION['user_id']]);
-                $profile_count = $profile_stmt->fetch()['profile_count'];
-                
-                if ($profile_count > $new_plan['nb_profile_max']) {
-                    $_SESSION['pending_plan_change'] = [
-                        'new_plan_id' => $new_plan_id,
-                        'profiles_to_delete' => $profile_count - $new_plan['nb_profile_max']
-                    ];
-                    header("Location: account.php?confirm=1");
-                    exit();
-                } else {
-                    /* No profile deletion needed, process immediately */
-                    $stmt = $conn->prepare("UPDATE utilisateur SET id_abonnement = ? WHERE id = ?");
-                    $stmt->execute([$new_plan_id, $_SESSION['user_id']]);
-                    
-                    /* Update session */
-                    $_SESSION['subscription_id'] = $new_plan_id;
-                    header("Location: account.php?success=1");
-                    exit();
-                }
-            } catch (PDOException $e) {
-                /* If profile table doesn't exist, just change the plan */
-                $stmt = $conn->prepare("UPDATE utilisateur SET id_abonnement = ? WHERE id = ?");
-                $stmt->execute([$new_plan_id, $_SESSION['user_id']]);
-                $_SESSION['subscription_id'] = $new_plan_id;
-                header("Location: account.php?success=1");
-                exit();
-            }
+            requete('DELETE FROM utilisateur WHERE id = ?', [$idUtilisateur]);
+            $_SESSION = [];
+            session_regenerate_id(true);
+            flash('success', 'Your account and all its data have been deleted.');
+            rediriger('login.php');
         }
+        rediriger('account.php#danger');
     }
+    rediriger('account.php');
 }
 
-/* Get current profile count */
-$profile_count = 0;
-try {
-    $profile_stmt = $conn->prepare("SELECT COUNT(*) as count FROM profils WHERE id_utilisateur = ?");
-    $profile_stmt->execute([$_SESSION['user_id']]);
-    $profile_count = $profile_stmt->fetch()['count'];
-} catch (PDOException $e) {
+$compte = requete('SELECT * FROM utilisateur WHERE id = ?', [$idUtilisateur])->fetch();
+$nbProfils = (int) requete('SELECT COUNT(*) FROM profils WHERE id_utilisateur = ?', [$idUtilisateur])->fetchColumn();
+$historiqueAbonnements = requete('SELECT a.*, o.nom FROM abonnement a JOIN offre o ON o.id = a.id_offre
+                                  WHERE a.id_utilisateur = ? ORDER BY a.date_debut DESC LIMIT 6', [$idUtilisateur])->fetchAll();
+$activite = isset($_SESSION['profile_id']) ? requete(
+    "SELECT vi.*, COALESCE(vf.titre, vs.titre) AS titre, e.numero_saison, e.numero_episode,
+            COALESCE(vi.id_film, e.id_serie) AS id_video
+     FROM visionnage vi
+     LEFT JOIN video vf ON vf.id = vi.id_film
+     LEFT JOIN episode e ON e.id = vi.id_episode
+     LEFT JOIN video vs ON vs.id = e.id_serie
+     JOIN profils p ON p.id = vi.id_profil
+     WHERE vi.id_profil = ? AND p.id_utilisateur = ?
+     ORDER BY vi.date_visionnage DESC LIMIT 8",
+    [$_SESSION['profile_id'], $idUtilisateur])->fetchAll() : [];
+
+$enAttente = null;
+if (isset($_GET['confirm'], $_SESSION['changement_en_attente'])) {
+    $enAttente = requete('SELECT * FROM offre WHERE id = ?', [$_SESSION['changement_en_attente']])->fetch();
 }
+
+$profil = isset($_SESSION['profile_id'])
+    ? requete('SELECT * FROM profils WHERE id = ? AND id_utilisateur = ?', [$_SESSION['profile_id'], $idUtilisateur])->fetch()
+    : null;
+$profil = $profil ?: ['nom' => $utilisateur['nom'], 'avatar' => 'avatar1.png'];
+
+entete('Account', ['navbar.css', 'account.css']);
+include __DIR__ . '/includes/navbar.php';
 ?>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Account Settings - BING</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/css/account.css">
-</head>
-<body>
-    <?php include('navbar.php'); ?>
-    
     <div class="account-container">
         <div class="account-header">
-            <h1 class="account-title">Account Settings</h1>
+            <h1 class="account-title">Account</h1>
         </div>
-        
-        <?php if (isset($_GET['success'])): ?>
-            <div class="success-message">Your plan has been updated successfully!</div>
-        <?php endif; ?>
-        
-        <?php if (isset($password_error)): ?>
-            <div class="error-message"><?php echo htmlspecialchars($password_error); ?></div>
-        <?php endif; ?>
-        
-        <?php if (isset($password_success)): ?>
-            <div class="success-message"><?php echo htmlspecialchars($password_success); ?></div>
-        <?php endif; ?>
-        
-        <div class="account-section">
-            <h2 class="section-title">
-                <i class="fas fa-id-card"></i> Membership & Billing
-            </h2>
+
+        <div class="account-section" id="plan">
+            <h2 class="section-title"><i class="fas fa-id-card"></i> Membership &amp; Billing</h2>
+            <?php if (!$abonnement): ?>
+                <div class="error-message">You have no active subscription. Choose a plan to start watching again.</div>
+            <?php endif; ?>
             <div class="account-details">
                 <div class="detail-card">
-                    <div class="detail-label">
-                        <i class="fas fa-envelope"></i> Email
-                    </div>
-                    <div class="detail-value"><?php echo htmlspecialchars($user['email']); ?></div>
+                    <div class="detail-label"><i class="fas fa-envelope"></i> Email</div>
+                    <div class="detail-value"><?= e($compte['email']) ?></div>
+                    <div class="detail-sub">Member since <?= e(date('F Y', strtotime($compte['date_creation']))) ?></div>
                 </div>
-                
+
                 <div class="detail-card">
-                    <div class="detail-label">
-                        <i class="fas fa-lock"></i> Password
-                    </div>
+                    <div class="detail-label"><i class="fas fa-lock"></i> Password</div>
                     <div class="detail-value">••••••••</div>
-                    <a href="#change-password" class="action-link">
-                        <i class="fas fa-pencil-alt"></i> Change password
-                    </a>
+                    <a href="#change-password" class="action-link"><i class="fas fa-pencil-alt"></i> Change password</a>
                 </div>
-                
+
                 <div class="detail-card">
-                    <div class="detail-label">
-                        <i class="fas fa-crown"></i> Plan
-                    </div>
-                    <div class="detail-value">
-                        <?php echo htmlspecialchars($user['abonnement_nom']); ?> ($<?php echo $user['prix']; ?>/month)
-                    </div>
-                    <a id="changePlanBtn" class="action-link">
-                        <i class="fas fa-exchange-alt"></i> Change plan
-                    </a>
+                    <div class="detail-label"><i class="fas fa-crown"></i> Plan</div>
+                    <?php if ($abonnement): ?>
+                        <div class="detail-value"><?= e($abonnement['offre']) ?> ($<?= number_format((float) $abonnement['prix_mensuel'], 2) ?>/month)</div>
+                        <div class="detail-sub">Paid until <?= e(date('F j, Y', strtotime($abonnement['date_fin']))) ?></div>
+                    <?php else: ?>
+                        <div class="detail-value">No active plan</div>
+                    <?php endif; ?>
+                    <button type="button" id="changePlanBtn" class="action-link"><i class="fas fa-exchange-alt"></i> <?= $abonnement ? 'Change plan' : 'Choose a plan' ?></button>
                 </div>
-                
+
                 <div class="detail-card">
-                    <div class="detail-label">
-                        <i class="fas fa-user-friends"></i> Profiles
-                    </div>
-                    <div class="detail-value">
-                        <?php echo $profile_count . " of " . $user['nb_profile_max'] . " profile(s) used"; ?>
-                    </div>
-                    <a href="profiles.php" class="action-link">
-                        <i class="fas fa-cog"></i> Manage profiles
-                    </a>
+                    <div class="detail-label"><i class="fas fa-user-friends"></i> Profiles</div>
+                    <div class="detail-value"><?= $nbProfils ?> of <?= $abonnement ? (int) $abonnement['nb_profils_max'] : 1 ?> used</div>
+                    <a href="<?= url('profiles.php') ?>" class="action-link"><i class="fas fa-cog"></i> Manage profiles</a>
                 </div>
             </div>
+
+            <?php if ($historiqueAbonnements): ?>
+            <h3 class="sub-title">Billing history</h3>
+            <table class="history-table">
+                <thead><tr><th>Plan</th><th>From</th><th>To</th><th>Price</th></tr></thead>
+                <tbody>
+                <?php foreach ($historiqueAbonnements as $ligne): ?>
+                    <tr>
+                        <td><?= e($ligne['nom']) ?></td>
+                        <td><?= e($ligne['date_debut']) ?></td>
+                        <td><?= e($ligne['date_fin']) ?></td>
+                        <td>$<?= number_format((float) $ligne['prix_mensuel'], 2) ?>/month</td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <?php endif; ?>
         </div>
-        
+
+        <?php if ($activite): ?>
+        <div class="account-section">
+            <h2 class="section-title"><i class="fas fa-history"></i> Recently watched by <?= e($profil['nom']) ?></h2>
+            <table class="history-table">
+                <thead><tr><th>Title</th><th>Date</th><th>Progress</th></tr></thead>
+                <tbody>
+                <?php foreach ($activite as $ligne):
+                    $pourcent = $ligne['duree_secondes'] > 0 ? min(100, (int) round(100 * $ligne['position_secondes'] / $ligne['duree_secondes'])) : 0; ?>
+                    <tr>
+                        <td>
+                            <a href="<?= url($ligne['id_film'] ? 'watch.php?movie=' . $ligne['id_film'] : 'watch.php?episode=' . $ligne['id_episode']) ?>"><?= e($ligne['titre']) ?></a>
+                            <?php if ($ligne['id_episode']): ?><span class="muted">S<?= (int) $ligne['numero_saison'] ?> E<?= (int) $ligne['numero_episode'] ?></span><?php endif; ?>
+                        </td>
+                        <td><?= e(date('M j, Y', strtotime($ligne['date_visionnage']))) ?></td>
+                        <td><span class="mini-progress"><span style="width: <?= $pourcent ?>%"></span></span> <?= $pourcent ?>%</td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif; ?>
+
         <div class="account-section" id="change-password">
-            <h2 class="section-title">
-                <i class="fas fa-key"></i> Change Password
-            </h2>
+            <h2 class="section-title"><i class="fas fa-key"></i> Change Password</h2>
             <form method="POST">
+                <?= champ_csrf() ?>
+                <input type="hidden" name="action" value="password">
                 <div class="form-group password-container">
                     <label for="current_password">Current Password</label>
-                    <input type="password" id="current_password" name="current_password" required>
-                    <i class="fas fa-eye toggle-password" onclick="togglePassword('current_password')"></i>
+                    <input type="password" id="current_password" name="current_password" required autocomplete="current-password">
+                    <i class="fas fa-eye toggle-password" data-target="current_password"></i>
                 </div>
-                
                 <div class="form-group password-container">
                     <label for="new_password">New Password</label>
-                    <input type="password" id="new_password" name="new_password" required>
-                    <i class="fas fa-eye toggle-password" onclick="togglePassword('new_password')"></i>
+                    <input type="password" id="new_password" name="new_password" required minlength="8" autocomplete="new-password">
+                    <i class="fas fa-eye toggle-password" data-target="new_password"></i>
                 </div>
-                
                 <div class="form-group password-container">
                     <label for="confirm_password">Confirm New Password</label>
-                    <input type="password" id="confirm_password" name="confirm_password" required>
-                    <i class="fas fa-eye toggle-password" onclick="togglePassword('confirm_password')"></i>
+                    <input type="password" id="confirm_password" name="confirm_password" required minlength="8" autocomplete="new-password">
+                    <i class="fas fa-eye toggle-password" data-target="confirm_password"></i>
                 </div>
-                
-                <button type="submit" name="change_password" class="submit-button">
-                    <i class="fas fa-save"></i> Update Password
-                </button>
+                <button type="submit" class="submit-button"><i class="fas fa-save"></i> Update Password</button>
             </form>
         </div>
+
+        <?php if (!$utilisateur['est_admin']): ?>
+        <div class="account-section danger-zone" id="danger">
+            <h2 class="section-title"><i class="fas fa-exclamation-triangle"></i> Delete Account</h2>
+            <p class="muted">Your profiles, lists, viewing history and subscriptions will be permanently deleted.</p>
+            <form method="POST" class="delete-account-form">
+                <?= champ_csrf() ?>
+                <input type="hidden" name="action" value="delete_account">
+                <div class="form-group">
+                    <label for="delete_password">Confirm with your password</label>
+                    <input type="password" id="delete_password" name="password" required autocomplete="current-password">
+                </div>
+                <button type="submit" class="submit-button danger-button"><i class="fas fa-trash"></i> Delete my account</button>
+            </form>
+        </div>
+        <?php endif; ?>
     </div>
-    
-    <!-- Plan Change Modal -->
-    <div class="modal-overlay" id="planModal">
-        <div class="plan-modal">
+
+    <!-- Choix d'une offre -->
+    <div class="modal-overlay<?= !$abonnement && !$enAttente ? ' active' : '' ?>" id="planModal">
+        <div class="plan-modal" role="dialog" aria-labelledby="planModalTitle">
             <div class="modal-header">
-                <h2 class="modal-title">Change Your Subscription Plan</h2>
-                <button class="close-modal" onclick="closeModal()">&times;</button>
+                <h2 class="modal-title" id="planModalTitle"><?= $abonnement ? 'Change Your Plan' : 'Choose a Plan' ?></h2>
+                <button class="close-modal" type="button" aria-label="Close">&times;</button>
             </div>
-            
             <form method="POST">
+                <?= champ_csrf() ?>
+                <input type="hidden" name="action" value="change_plan">
                 <div class="plans-grid">
-                    <?php foreach ($plans as $plan): ?>
-                        <label class="plan-option <?php echo $plan['id'] == $user['id_abonnement'] ? 'selected' : ''; ?>">
-                            <input type="radio" name="new_plan_id" value="<?php echo $plan['id']; ?>" 
-                                   <?php echo $plan['id'] == $user['id_abonnement'] ? 'checked' : ''; ?> 
-                                   style="display: none;">
+                    <?php foreach ($offres as $offre):
+                        $actuelle = $abonnement && (int) $offre['id'] === (int) $abonnement['id_offre']; ?>
+                        <label class="plan-option<?= $actuelle ? ' selected' : '' ?>">
+                            <input type="radio" name="new_plan_id" value="<?= (int) $offre['id'] ?>"<?= $actuelle ? ' checked' : '' ?> class="visually-hidden" required>
                             <div class="plan-name">
-                                <?php echo htmlspecialchars($plan['nom']); ?>
-                                <span class="plan-price">$<?php echo $plan['prix']; ?>/month</span>
+                                <?= e($offre['nom']) ?>
+                                <span class="plan-price">$<?= number_format((float) $offre['prix_mensuel'], 2) ?>/month</span>
                             </div>
-                            <?php if ($plan['id'] == $user['id_abonnement']): ?>
-                                <span class="current-plan-marker">Current Plan</span>
-                            <?php endif; ?>
+                            <?php if ($actuelle): ?><span class="current-plan-marker">Current Plan</span><?php endif; ?>
                             <ul class="plan-features">
-                                <li>Max <?php echo $plan['nb_profile_max']; ?> profiles</li>
-                                <li>HD streaming available</li>
-                                <li>Cancel anytime</li>
-                                <?php if ($plan['prix'] > $user['prix']): ?>
-                                    <li style="color: var(--secondary); font-weight: 500;">
-                                        +$<?php echo $plan['prix'] - $user['prix']; ?> upgrade fee
-                                    </li>
-                                <?php elseif ($plan['prix'] < $user['prix']): ?>
-                                    <li style="color: var(--primary);">
-                                        No refunds for downgrades
-                                    </li>
+                                <?php foreach (array_filter(explode("\n", $offre['avantages'])) as $avantage): ?>
+                                    <li><?= e(trim($avantage)) ?></li>
+                                <?php endforeach; ?>
+                                <?php if ($abonnement && !$actuelle): ?>
+                                    <?php if ($offre['prix_mensuel'] > $abonnement['prix_mensuel']): ?>
+                                        <li class="plan-note">Pay $<?= number_format(montant_changement($abonnement, $offre), 2) ?> today (prorated)</li>
+                                    <?php else: ?>
+                                        <li class="plan-note">No payment today</li>
+                                    <?php endif; ?>
+                                <?php elseif (!$abonnement): ?>
+                                    <li class="plan-note">Pay $<?= number_format((float) $offre['prix_mensuel'], 2) ?> today</li>
                                 <?php endif; ?>
                             </ul>
                         </label>
                     <?php endforeach; ?>
                 </div>
-                
-                <button type="submit" name="change_plan" class="submit-button" style="width: 100%;">
-                    <i class="fas fa-check-circle"></i> Continue with Plan Change
-                </button>
+                <button type="submit" class="submit-button btn-full"><i class="fas fa-check-circle"></i> Continue</button>
             </form>
         </div>
     </div>
-    
-    <!-- Confirmation Modal (shown when URL has ?confirm=1) -->
-    <?php if (isset($_GET['confirm']) && isset($_SESSION['pending_plan_change'])): 
-        $new_plan_id = $_SESSION['pending_plan_change']['new_plan_id'];
-        $profiles_to_delete = $_SESSION['pending_plan_change']['profiles_to_delete'];
-        
-        $new_plan = null;
-        foreach ($plans as $plan) {
-            if ($plan['id'] == $new_plan_id) {
-                $new_plan = $plan;
-                break;
-            }
-        }
-        
-        if ($new_plan): ?>
-            <div class="confirmation-modal">
-                <div class="confirmation-box">
-                    <h3 class="confirmation-title">Confirm Plan Change</h3>
-                    <p class="confirmation-message">
-                        You're about to change to the <?php echo htmlspecialchars($new_plan['nom']); ?> plan.<br><br>
-                        <strong>Warning:</strong> This will delete <?php echo $profiles_to_delete; ?> of your profiles 
-                        (<?php echo $new_plan['nb_profile_max']; ?> profiles allowed in this plan).<br><br>
-                        Are you sure you want to proceed?
-                    </p>
-                    <div class="confirmation-buttons">
-                        <form method="POST" style="display: inline;">
-                            <input type="hidden" name="new_plan_id" value="<?php echo $new_plan_id; ?>">
-                            <button type="submit" name="confirm_plan_change" class="confirmation-button confirm-btn">
-                                Confirm Change
-                            </button>
-                        </form>
-                        <a href="account.php" class="confirmation-button cancel-btn">Cancel</a>
-                    </div>
+
+    <?php if ($enAttente):
+        $enTrop = profils_en_trop($idUtilisateur, (int) $enAttente['nb_profils_max']); ?>
+        <div class="confirmation-modal">
+            <div class="confirmation-box" role="alertdialog">
+                <h3 class="confirmation-title">Confirm Plan Change</h3>
+                <p class="confirmation-message">
+                    The <?= e($enAttente['nom']) ?> plan allows <?= (int) $enAttente['nb_profils_max'] ?> profile<?= $enAttente['nb_profils_max'] > 1 ? 's' : '' ?>.
+                    These profiles will be <strong>deleted</strong> with their lists and history:
+                </p>
+                <ul class="profiles-to-delete">
+                    <?php foreach ($enTrop as $p): ?><li><?= e($p['nom']) ?></li><?php endforeach; ?>
+                </ul>
+                <div class="confirmation-buttons">
+                    <form method="POST">
+                        <?= champ_csrf() ?>
+                        <input type="hidden" name="action" value="confirm_downgrade">
+                        <input type="hidden" name="new_plan_id" value="<?= (int) $enAttente['id'] ?>">
+                        <button type="submit" class="confirmation-button confirm-btn">Confirm Change</button>
+                    </form>
+                    <a href="<?= url('account.php') ?>" class="confirmation-button cancel-btn">Cancel</a>
                 </div>
             </div>
-        <?php endif; ?>
+        </div>
     <?php endif; ?>
-    
-    <script src="/js/account.js"></script>
-</body>
-</html>
+<?php pied(['forms.js', 'account.js']); ?>
